@@ -5,9 +5,6 @@ maxpsi -0.1
 vwcsat 0.9
 organic 1000
 k_leaching 0.0015
-Vm_l 0.01
-km_l 25
-M_Lmin 10
 klmc_min 0.25
 Qmax 4500
 klmc 0.35
@@ -25,4 +22,4 @@ kpom_agg 50
 Vmin_agg 0.07
 kmin_agg 2000
 AGGmax 500
-kagg	0.0002
+kagg 0.0002
