@@ -52,28 +52,6 @@
 ! end of flux
 
 
-!!  key variables to track the system over time CENTURY
-! pools 
-  real(r8), dimension(:), allocatable :: DOC
-  real(r8), dimension(:), allocatable :: ACTIVE
-  real(r8), dimension(:), allocatable :: PASSIVE
-  real(r8), dimension(:), allocatable :: SLOW
-! end of pools
-
-! flux
-  real(r8), dimension(:), allocatable :: f_DOC_ATM
-  real(r8), dimension(:), allocatable :: f_ACTIVE_ATM
-  real(r8), dimension(:), allocatable :: f_PASSIVE_ATM
-  real(r8), dimension(:), allocatable :: f_SLOW_ATM
-  real(r8), dimension(:), allocatable :: f_ACTIVE_DOC
-  real(r8), dimension(:), allocatable :: f_ACTIVE_SLOW
-  real(r8), dimension(:), allocatable :: f_SLOW_PASSIVE
-  real(r8), dimension(:), allocatable :: f_ACTIVE_PASSIVE
-  real(r8), dimension(:), allocatable :: f_PASSIVE_ACTIVE
-  real(r8), dimension(:), allocatable :: f_DOC_Leaching
-! end of flux CENTURY
-
-
 ! soil properties over time
   real(r8), dimension(:), allocatable :: psi_real
 ! end of flux
@@ -189,26 +167,6 @@
   allocate(f_MB_atm(1:nr))
 ! end of the allocation
   
-! CENTURY allocation
-  allocate(DOC(1:nr))
-  allocate(ACTIVE(1:nr))
-  allocate(PASSIVE(1:nr))
-  allocate(SLOW(1:nr))
-! end of pools
-
-! flux
-  allocate(f_DOC_ATM(1:nr))
-  allocate(f_ACTIVE_ATM(1:nr))
-  allocate(f_PASSIVE_ATM(1:nr))
-  allocate(f_SLOW_ATM(1:nr))
-  allocate(f_ACTIVE_DOC(1:nr))
-  allocate(f_ACTIVE_SLOW(1:nr))
-  allocate(f_SLOW_PASSIVE(1:nr))
-  allocate(f_ACTIVE_PASSIVE(1:nr))
-  allocate(f_PASSIVE_ACTIVE(1:nr))
-  allocate(f_DOC_Leaching(1:nr))
-! end of allocation for CENTURY 
-  
   write(*,*) 'Attempting to read soil parameters .....'
   open(unit = 10, file=soilparafile)
   do i = 1, soil_par_num
@@ -273,11 +231,6 @@
   MB(1)=initial_mb
   MINERAL(1)=initial_mineral
   SOILAGG(1)=initial_soilagg
-
-  DOC(1:)=LMWC(1)
-  ACTIVE(1)=MB(1) + POM(1)
-  PASSIVE(1)=MINERAL(1)
-  SLOW(1)=SOILAGG(1)  
   
   do n = 1, nr
   vwc = forc_sw(n)
@@ -298,22 +251,13 @@ call decomp(forc_st(n), forc_sw(n), psi_real(n), forc_npp(n), forc_roots(n), &
   SOILAGG(n+1)=SOILAGG(n)
   endif
  
-! upading the pool after each iteration 
-  if(n < nr) then
-  DOC(n+1)=DOC(n)
-  ACTIVE(n+1)=ACTIVE(n)
-  SLOW(n+1)=SLOW(n)
-  PASSIVE(n+1)=PASSIVE(n)
-  endif
   end do
   
   if(flag_output ==1) then
 call writeoutput(flag_annual, nr, forc_st, forc_sw, forc_npp, forc_roots, &
     forc_exoenzyme, LMWC, POM, MB, MINERAL, SOILAGG, f_LM_leaching, f_MI_LM_des,&
     f_LM_MI_sor, f_LM_MB_uptake, f_PO_LM_dep, f_MB_MI_sor, f_PO_SO_agg, f_MI_SO_agg,&
-    f_SO_PO_break, f_SO_MI_break, f_MB_atm, outputfile, DOC, ACTIVE, SLOW, PASSIVE, f_DOC_ATM, f_ACTIVE_ATM,&
-    f_PASSIVE_ATM, f_SLOW_ATM,f_ACTIVE_DOC, f_ACTIVE_SLOW, f_SLOW_PASSIVE, f_ACTIVE_PASSIVE,&
-    f_PASSIVE_ACTIVE, f_DOC_Leaching)
+    f_SO_PO_break, f_SO_MI_break, f_MB_atm, outputfile)
   end if
 
   deallocate(forc_st)
@@ -342,29 +286,9 @@ call writeoutput(flag_annual, nr, forc_st, forc_sw, forc_npp, forc_roots, &
   deallocate(f_MB_atm)
 ! end of the allocation
   
-! CENTURY allocation
-  deallocate(DOC)
-  deallocate(ACTIVE)
-  deallocate(PASSIVE)
-  deallocate(SLOW)
-! end of pools
-
-! flux
-  deallocate(f_DOC_ATM)
-  deallocate(f_ACTIVE_ATM)
-  deallocate(f_PASSIVE_ATM)
-  deallocate(f_SLOW_ATM)
-  deallocate(f_ACTIVE_DOC)
-  deallocate(f_ACTIVE_SLOW)
-  deallocate(f_SLOW_PASSIVE)
-  deallocate(f_ACTIVE_PASSIVE)
-  deallocate(f_PASSIVE_ACTIVE)
-  deallocate(f_DOC_Leaching)
-  
   stop
 END PROGRAM Millennial
 ! main program end
-
 
 
 ! read data subroutine start
@@ -410,9 +334,7 @@ end subroutine readdata
 subroutine writeoutput(flag_annual, nr, forc_st, forc_sw, forc_npp, forc_roots, &
     forc_exoenzyme, LMWC, POM, MB, MINERAL, SOILAGG, f_LM_leaching, f_MI_LM_des, &
     f_LM_MI_sor, f_LM_MB_uptake, f_PO_LM_dep, f_MB_MI_sor,f_PO_SO_agg, f_MI_SO_agg, &
-    f_SO_PO_break, f_SO_MI_break, f_MB_atm, outputfile, DOC, ACTIVE, SLOW, PASSIVE, f_DOC_ATM, f_ACTIVE_ATM,&
-    f_PASSIVE_ATM, f_SLOW_ATM,f_ACTIVE_DOC, f_ACTIVE_SLOW, f_SLOW_PASSIVE, f_ACTIVE_PASSIVE,&
-    f_PASSIVE_ACTIVE, f_DOC_Leaching)
+    f_SO_PO_break, f_SO_MI_break, f_MB_atm, outputfile)
   
   implicit none
   integer,parameter     :: r8 = selected_real_kind(12) ! 8 byte real
@@ -441,20 +363,6 @@ subroutine writeoutput(flag_annual, nr, forc_st, forc_sw, forc_npp, forc_roots, 
   real(r8), intent(in)    :: f_SO_MI_break(1:nr)
   real(r8), intent(in)    :: f_MB_atm(1:nr)
 
-  real(r8), intent(in)    :: DOC(1:nr)
-  real(r8), intent(in)    :: ACTIVE(1:nr)
-  real(r8), intent(in)    :: PASSIVE(1:nr)
-  real(r8), intent(in)    :: SLOW(1:nr)
-  real(r8), intent(in)    :: f_DOC_ATM(1:nr)
-  real(r8), intent(in)    :: f_ACTIVE_ATM(1:nr)
-  real(r8), intent(in)    :: f_PASSIVE_ATM(1:nr)
-  real(r8), intent(in)    :: f_SLOW_ATM(1:nr)
-  real(r8), intent(in)    :: f_ACTIVE_DOC(1:nr)
-  real(r8), intent(in)    :: f_ACTIVE_SLOW(1:nr)
-  real(r8), intent(in)    :: f_SLOW_PASSIVE(1:nr)
-  real(r8), intent(in)    :: f_ACTIVE_PASSIVE(1:nr)
-  real(r8), intent(in)    :: f_PASSIVE_ACTIVE(1:nr)
-  real(r8), intent(in)    :: f_DOC_Leaching(1:nr)
   
   character(len = 256), intent(in)  :: outputfile
   
@@ -494,10 +402,7 @@ else
 ! forc_st(n), forc_sw(n), forc_npp(n), forc_roots(n), forc_exoenzyme(n), &
   LMWC(n), POM(n), MB(n), MINERAL(n), SOILAGG(n)!, &
 ! f_LM_leaching(n), f_MI_LM_des(n),f_LM_MI_sor(n), f_LM_MB_uptake(n),f_PO_LM_dep(n), &
-! f_MB_MI_sor(n),f_PO_SO_agg(n), f_MI_SO_agg(n),f_SO_PO_break(n), f_SO_MI_break(n), f_MB_atm(n)!, &
-! DOC(n), ACTIVE(n), SLOW(n), PASSIVE(n)!, &
-! f_DOC_ATM(n),f_ACTIVE_ATM(n),f_PASSIVE_ATM(n), f_SLOW_ATM(n),f_ACTIVE_DOC(n), f_ACTIVE_SLOW(n), &
-! f_SLOW_PASSIVE(n), f_ACTIVE_PASSIVE(n),f_PASSIVE_ACTIVE(n), f_DOC_Leaching(n)
+! f_MB_MI_sor(n),f_PO_SO_agg(n), f_MI_SO_agg(n),f_SO_PO_break(n), f_SO_MI_break(n), f_MB_atm(n)!
   if (ier /= 0) then
   write(*,*) 'error in writing output'
   end if
