@@ -509,7 +509,7 @@ subroutine decomp(forc_st, forc_sw, psi, forc_npp, forc_roots, &
     kmin_agg, &
     AGGmax, &
     kagg
-  
+
   t_scalar = 0._r8
   t_scalar_reverse = 0._r8
   temp = (forc_st - 15._r8) / 10._r8
