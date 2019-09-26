@@ -6,15 +6,15 @@ module soilType
 ! set parameters
 type, public :: soil_type
   real(p8)    :: param_pi
-  real(p8)    :: param_pa 
-  real(p8)    :: kaff_pl    
+  real(p8)    :: param_pa
+  real(p8)    :: kaff_pl   
   real(p8)    :: alpha_pl   
-  real(p8)    :: eact_pl   
+  real(p8)    :: eact_pl  
   real(p8)    :: gas_const
   real(p8)    :: rate_pa
   real(p8)    :: rate_break
   real(p8)    :: rate_leach
-  real(p8)    :: param_pad
+  real(p8)    :: kaff_des
   real(p8)    :: param_p1
   real(p8)    :: param_p2
   real(p8)    :: param_pH
@@ -27,6 +27,7 @@ type, public :: soil_type
   real(p8)    :: eact_lb
   real(p8)    :: rate_bd
   real(p8)    :: rate_ma
+  real(p8)    :: doc_eq
 
   real(p8)    :: cue_ref
   real(p8)    :: cue_t
@@ -233,41 +234,53 @@ subroutine decomp(this, forc_st, forc_npp, &
 !Equation 2
   ! POM -> LMWC
   if (POM > 0._r8) then
-  f_PO_LM = POM * vmax_pl * MIC * scalar_wd / (this%kaff_pl + POM + MIC) 
+    f_PO_LM = POM * vmax_pl * MIC * scalar_wd / (this%kaff_pl + POM + MIC) 
+  else
+    f_PO_LM = 0._r8
   endif
 !Equation 6
   ! POM -> AGG
   if (POM > 0._r8) then
-  f_PO_AG = this%rate_pa * scalar_wd * POM
+    f_PO_AG = this%rate_pa * scalar_wd * POM
+  else
+    f_PO_AG = 0._r8
   endif
 !Equation 7
   ! AGG -> MAOM
   if (AGG > 0._r8) then
-  f_AG_break = this%rate_break * scalar_wd * AGG
+    f_AG_break = this%rate_break * scalar_wd * AGG
+  else
+    f_AG_break = 0._r8
   endif
 !Equation 9
   ! LMWC -> out of system leaching
   if (LMWC > 0._r8) then
-  f_LM_leach = this%rate_leach * scalar_wd * LMWC 
+    f_LM_leach = this%rate_leach * scalar_wd * LMWC
+  else
+    f_LM_leach = 0._r8
   endif
 !Equation 11
-  this%kaff_lm = kaff_eq * this%param_pad !WORKING
+  this%kaff_lm = kaff_eq * this%kaff_des
 
 !Equation 15
-  this%kaff_ld = kaff_eq * (1 - this%param_pad)
+  this%kaff_ld = this%kaff_des
 
 !Equation 23
-  this%kaff_bm = kaff_eq * this%param_pad
+  this%kaff_bm = kaff_eq * this%kaff_des
 
 !Equation 10
   ! LMWC -> MAOM
   if (LMWC > 0._r8) then
-  f_LM_MA = scalar_wd * this%kaff_lm * LMWC * (param_qmax - MAOM)
+    f_LM_MA = scalar_wd * this%kaff_lm * LMWC * (param_qmax - MAOM)
+  else
+    f_LM_MA = 0._r8
   endif
 !Equation 14
   ! MAOM -> LMWC
   if (MAOM > 0._r8) then
-  f_MA_LM = this%kaff_ld * MAOM
+    f_MA_LM = this%kaff_ld * MAOM
+  else
+    f_MA_LM = 0._r8
   endif
 !Equation 17
   vmax_lb = this%alpha_lb * exp(-this%eact_lb / (this%gas_const * (forc_st + 273.15_r8)))
@@ -275,22 +288,30 @@ subroutine decomp(this, forc_st, forc_npp, &
 !Equation 16
   ! LMWC -> MIC
   if (LMWC > 0._r8) then
-  f_LM_MB = vmax_lb * scalar_wb * LMWC * MIC / (this%kaff_lb + MIC + LMWC)
+    f_LM_MB = vmax_lb * scalar_wb * LMWC * MIC / (this%kaff_lb + MIC + LMWC)
+  else
+    f_LM_MB = 0._r8
   endif
 !Equation 18
   ! MIC -> MAOM/LMWC
   if (MIC > 0._r8) then
-  f_MB_turn = this%rate_bd * MIC**2.0_r8
+    f_MB_turn = this%rate_bd * MIC ** 2.0_r8
+  else
+    f_MB_turn = 0._r8
   endif
 !Equation 20
   ! MAOM -> AGG
   if (MAOM > 0._r8) then
-  f_MA_AG = this%rate_ma * scalar_wd * MAOM
+    f_MA_AG = this%rate_ma * scalar_wd * MAOM
+  else
+    f_MA_AG = 0
   endif
-!Equation 22
-    if (MIC > 0._r8) then
-  param_pb = scalar_wd * this%kaff_bm * MIC * (param_qmax - MAOM) 
-    endif
+!Equation 22 WORKING
+  if (param_qmax > MAOM) then
+    param_pb = scalar_wd * this%kaff_bm * (param_qmax - MAOM)
+  else
+    param_pb = 0._r8
+  endif
 !Equation 25
   ! microbial growth flux, but is not used in mass balance
 !WORKING
@@ -311,7 +332,7 @@ subroutine decomp(this, forc_st, forc_npp, &
   AGG = AGG + f_MA_AG + f_PO_AG - f_AG_break
 
 !Equation 21
-  MAOM = MAOM + f_LM_MB - f_MA_LM + f_MB_turn * param_pb - f_MA_AG + f_AG_break * (1._r8 - this%param_pa)
+  MAOM = MAOM + f_LM_MA - f_MA_LM + f_MB_turn * param_pb - f_MA_AG + f_AG_break * (1._r8 - this%param_pa)
   
 !Equation 24
   MIC = MIC + f_LM_MB - f_MB_turn - f_MB_atm
@@ -332,11 +353,11 @@ implicit none
   real(r8), intent(out)   :: scalar_wb
 
  !Equation 5
- scalar_wd = (forc_sw/this%porosity)**0.5_r8
+ scalar_wd = (forc_sw / this%porosity) ** 0.5_r8
 
  !Equation 4
  scalar_wb = exp(this%lambda * this%matpot) * (this%kamin + (1._r8 - this%kamin) * &
-  ((this%porosity - forc_sw) / this%porosity)**0.5_r8) * scalar_wd
+  ((this%porosity - forc_sw) / this%porosity) ** 0.5_r8) * scalar_wd
 
 end subroutine soilwater
 ! hydrological properties end
@@ -410,7 +431,7 @@ PROGRAM Millennial
   real(r8)      :: initial_agg
 ! end of key variables
 
-  integer, parameter    :: soil_par_num = 28
+  integer, parameter    :: soil_par_num = 29
 ! character(len=256)      :: soil_par_f = './soilpara_in'   ! local file name
   integer           :: ier                      ! error code
   character(len=40)     :: soil_par_name(soil_par_num)  ! parameter name
@@ -485,7 +506,7 @@ PROGRAM Millennial
   this%rate_pa        = dummy(i); i = i + 1
   this%rate_break     = dummy(i); i = i + 1
   this%rate_leach     = dummy(i); i = i + 1
-  this%param_pad      = dummy(i); i = i + 1
+  this%kaff_des       = dummy(i); i = i + 1
   this%param_p1       = dummy(i); i = i + 1
   this%param_p2       = dummy(i); i = i + 1
   this%param_pH       = dummy(i); i = i + 1
@@ -504,7 +525,8 @@ PROGRAM Millennial
   this%matpot         = dummy(i); i = i + 1
   this%lambda         = dummy(i); i = i + 1
   this%porosity       = dummy(i); i = i + 1
-  this%kamin          = dummy(i)
+  this%kamin          = dummy(i); i = i + 1
+  this%doc_eq         = dummy(i)
   this%gas_const      = 8.31446_r8 ! Universal gas constant (J/K/mol)
 
   write(*,*) "Model inializing! "
@@ -537,7 +559,7 @@ PROGRAM Millennial
 !These should be outside the loop and written as parameters, but might want to leave option of time dependence
 !Equation 12
   !Mayes 2012, SSAJ
-  kaff_eq(n) =  exp(-this%param_p1 * this%param_pH - this%param_p2)
+  kaff_eq(n) = this%doc_eq * exp(-this%param_p1 * this%param_pH - this%param_p2)
 
 !Equation 13
   !Mayes 2012, SSAJ
@@ -561,7 +583,7 @@ call decomp(this, forc_st(n), forc_npp(n), &
   !print *, 'LMWC:', LMWC(n), ' POM:', POM(n), ' MIC:', MIC(n), ' MAOM:', MAOM(n), ' AGG:', AGG(n)
   endif
 
-  print *, 'finished time step', n 
+  !print *, 'finished time step', n 
 
   end do
   
