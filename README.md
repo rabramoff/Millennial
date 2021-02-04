@@ -2,7 +2,7 @@
 
 This model develops upon the conceptual framework presented in the Biogeochemistry paper Abramoff et al. 2018 (http://dx.doi.org/10.1007/s10533-017-0409-7). 
 
-The model is organized in folders, first by programming language and then by model version.\
+The model is organized in folders, first by programming language and then by model version.
 ### Fortran:
 #### MillennialV1 Files:
 &nbsp;&nbsp;&nbsp; <b>main.F90</b> - original model code\
