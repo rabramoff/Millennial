@@ -17,9 +17,9 @@ The model is organized in folders, first by programming language and then by mod
 #### models:
 &nbsp;&nbsp;&nbsp; <b>derivs_Century.R</b> - Century model equations\
 &nbsp;&nbsp;&nbsp; <b>derivs_V1.R</b> - Millennial V1 model equations\
-&nbsp;&nbsp;&nbsp; <b>derivs_V2_ECA.R</b> - Millennial V1 model equations with ECA kinetics\
-&nbsp;&nbsp;&nbsp; <b>derivs_V2_MM.R</b> - Millennial V1 model equations with Michaelis-Menten kinetics\
-&nbsp;&nbsp;&nbsp; <b>derivs_V2_LIN.R</b> - Millennial V1 model equations with linear kinetics
+&nbsp;&nbsp;&nbsp; <b>derivs_V2_ECA.R</b> - Millennial V2 model equations with ECA kinetics\
+&nbsp;&nbsp;&nbsp; <b>derivs_V2_MM.R</b> - Millennial V2 model equations with Michaelis-Menten kinetics\
+&nbsp;&nbsp;&nbsp; <b>derivs_V2_LIN.R</b> - Millennial V2 model equations with linear kinetics
 
 #### simulation:
 &nbsp;&nbsp;&nbsp; <b>run_functions.R</b> - run script
