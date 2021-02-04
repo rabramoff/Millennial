@@ -1,7 +1,7 @@
-1460000
+366
 soilpara_in
 1
 1
-outputcontrol.txt
+outputtest.txt
 initial.txt
 globalaverage.txt

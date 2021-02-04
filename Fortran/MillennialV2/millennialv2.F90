@@ -10,37 +10,32 @@ type, public :: soil_type
   real(p8)    :: kaff_pl   
   real(p8)    :: alpha_pl   
   real(p8)    :: eact_pl  
-  real(p8)    :: gas_const
   real(p8)    :: rate_pa
   real(p8)    :: rate_break
   real(p8)    :: rate_leach
   real(p8)    :: kaff_des
   real(p8)    :: param_p1
   real(p8)    :: param_p2
-  real(p8)    :: param_pH
-  real(p8)    :: param_bulkd
-  real(p8)    :: param_c1
-  real(p8)    :: param_c2
-  real(p8)    :: param_clay
   real(p8)    :: kaff_lb
   real(p8)    :: alpha_lb
   real(p8)    :: eact_lb
   real(p8)    :: rate_bd
   real(p8)    :: rate_ma
-  real(p8)    :: doc_eq
-
   real(p8)    :: cue_ref
   real(p8)    :: cue_t
   real(p8)    :: tae_ref
+  real(p8)    :: matpot ! soil matric potential kPa
+  real(p8)    :: lambda ! dependence of respiration on soil matric potential kPa
+  real(p8)    :: porosity ! total porosity
+  real(p8)    :: kamin ! minimum relative rate in saturated soil
+  real(p8)	  :: param_pb
+  real(p8)    :: param_c1
+  real(p8)    :: param_clay
+  real(p8)    :: param_qmax
+  real(p8)    :: param_bulkd
+  real(p8)    :: param_pH
+  real(p8)    :: gas_const
 
-  real(p8)    :: kaff_lm
-  real(p8)    :: kaff_ld
-  real(p8)    :: kaff_bm
-! soil properties
-  real(p8)      :: matpot ! soil matric potential kPa
-  real(p8)      :: lambda ! dependence of respiration on soil matric potential kPa
-  real(p8)      :: porosity ! total porosity
-  real(p8)      :: kamin ! minimum relative rate in saturated soil
 end type soil_type
 
 contains
@@ -85,7 +80,7 @@ end subroutine readdata
 
   
 subroutine writeoutput(flag_annual, nr, &
-    scalar_wd, scalar_wb, kaff_eq, param_qmax, param_pb, vmax_pl, vmax_lb, &
+    scalar_wd, scalar_wb, kaff_lm, param_qmax, vmax_pl, vmax_lb, &
     LMWC, POM, MIC, MAOM, AGG, f_AG_break, f_PO_AG,&
     f_MA_AG, f_PO_LM, f_LM_leach, f_LM_MA, f_LM_MB, f_MB_turn,&
     f_MA_LM, f_MB_atm, outputfile)
@@ -96,9 +91,8 @@ subroutine writeoutput(flag_annual, nr, &
   integer,  intent(in)    :: nr
   real(r8), intent(in)    :: scalar_wd(1:nr)
   real(r8), intent(in)    :: scalar_wb(1:nr)
-  real(r8), intent(in)    :: kaff_eq(1:nr)
+  real(r8), intent(in)    :: kaff_lm(1:nr)
   real(r8), intent(in)    :: param_qmax(1:nr)
-  real(r8), intent(in)    :: param_pb(1:nr)
   real(r8), intent(in)    :: vmax_pl(1:nr)
   real(r8), intent(in)    :: vmax_lb(1:nr)
   real(r8), intent(in)    :: LMWC(1:nr)
@@ -144,9 +138,8 @@ if(flag_annual == 1) then
       cagg = cagg + AGG((n - 1) * 365 + j)
       cswd = cswd + scalar_wd((n - 1) * 365 + j)
       cswb = cswb + scalar_wb((n - 1) * 365 + j)
-      ckeq = ckeq + kaff_eq((n - 1) * 365 + j)
+      ckeq = ckeq + kaff_lm((n - 1) * 365 + j)
       cqmx = cqmx + param_qmax((n - 1) * 365 + j)
-      cppb = cppb + param_pb((n - 1) * 365 + j)
       cvpl = cvpl + vmax_pl((n - 1) * 365 + j)
       cvlb = cvlb + vmax_lb((n - 1) * 365 + j)
       cfab = cfab + f_AG_break((n - 1) * 365 + j)
@@ -179,7 +172,7 @@ if(flag_annual == 1) then
     do n = 1, nr
     write(1000,*,iostat=ier)  n, &
     LMWC(n), POM(n), MIC(n), MAOM(n), AGG(n), &
-    scalar_wd(n), scalar_wb(n), kaff_eq(n), param_qmax(n), param_pb(n), vmax_pl(n), vmax_lb(n), &
+    scalar_wd(n), scalar_wb(n), kaff_lm(n), param_qmax(n), vmax_pl(n), vmax_lb(n), &
     f_AG_break(n), f_PO_AG(n),f_MA_AG(n), f_PO_LM(n), f_LM_leach(n), f_LM_MA(n), &
     f_LM_MB(n), f_MB_turn(n), f_MA_LM(n), f_MB_atm(n) 
       if (ier /= 0) then
@@ -194,7 +187,7 @@ end subroutine writeoutput
 
 ! decomposition subroutine start
 subroutine decomp(this, forc_st, forc_npp, &
-    scalar_wd, scalar_wb, kaff_eq, param_qmax, param_pb, vmax_pl, vmax_lb, &
+    scalar_wd, scalar_wb, kaff_lm, param_qmax, vmax_pl, vmax_lb, &
     LMWC, POM, MIC, MAOM, AGG, f_AG_break, f_PO_AG,&
     f_MA_AG, f_PO_LM, f_LM_leach, f_LM_MA, f_LM_MB, f_MB_turn,&
     f_MA_LM, f_MB_atm)
@@ -206,9 +199,8 @@ subroutine decomp(this, forc_st, forc_npp, &
   real(r8), intent(in) :: forc_npp
   real(r8), intent(in) :: scalar_wd
   real(r8), intent(in) :: scalar_wb
-  real(r8), intent(in) :: kaff_eq 
+  real(r8), intent(in) :: kaff_lm 
   real(r8), intent(in) :: param_qmax
-  real(r8), intent(inout) :: param_pb
   real(r8), intent(inout) :: vmax_pl
   real(r8), intent(inout) :: vmax_lb
 
@@ -233,11 +225,12 @@ subroutine decomp(this, forc_st, forc_npp, &
 
 !Equation 2
   ! POM -> LMWC
-  if (POM > 0._r8) then
-    f_PO_LM = POM * vmax_pl * MIC * scalar_wd / (this%kaff_pl + POM + MIC) 
+  if (POM > 0._r8 .AND. MIC > 0._r8) then
+    f_PO_LM = vmax_pl * scalar_wd * POM * MIC / (this%kaff_pl + MIC) 
   else
     f_PO_LM = 0._r8
   endif
+
 !Equation 6
   ! POM -> AGG
   if (POM > 0._r8) then
@@ -245,6 +238,7 @@ subroutine decomp(this, forc_st, forc_npp, &
   else
     f_PO_AG = 0._r8
   endif
+
 !Equation 7
   ! AGG -> MAOM
   if (AGG > 0._r8) then
@@ -252,6 +246,7 @@ subroutine decomp(this, forc_st, forc_npp, &
   else
     f_AG_break = 0._r8
   endif
+
 !Equation 9
   ! LMWC -> out of system leaching
   if (LMWC > 0._r8) then
@@ -259,86 +254,79 @@ subroutine decomp(this, forc_st, forc_npp, &
   else
     f_LM_leach = 0._r8
   endif
-!Equation 11
-  this%kaff_lm = kaff_eq * this%kaff_des
-
-!Equation 15
-  this%kaff_ld = this%kaff_des
-
-!Equation 23
-  this%kaff_bm = kaff_eq * this%kaff_des
 
 !Equation 10
   ! LMWC -> MAOM
-  if (LMWC > 0._r8) then
-    f_LM_MA = scalar_wd * this%kaff_lm * LMWC * (param_qmax - MAOM)
+  if (LMWC > 0._r8 .AND. MAOM > 0._r8) then
+    f_LM_MA = scalar_wd * kaff_lm * LMWC * (1 - MAOM / param_qmax)
   else
     f_LM_MA = 0._r8
   endif
-!Equation 14
+
+!Equation 13
   ! MAOM -> LMWC
   if (MAOM > 0._r8) then
-    f_MA_LM = this%kaff_ld * MAOM
+    f_MA_LM = this%kaff_des * MAOM / param_qmax
   else
     f_MA_LM = 0._r8
   endif
-!Equation 17
+
+!Equation 15
   vmax_lb = this%alpha_lb * exp(-this%eact_lb / (this%gas_const * (forc_st + 273.15_r8)))
 
-!Equation 16
+!Equation 14
   ! LMWC -> MIC
   if (LMWC > 0._r8) then
-    f_LM_MB = vmax_lb * scalar_wb * LMWC * MIC / (this%kaff_lb + MIC + LMWC)
+    f_LM_MB = vmax_lb * scalar_wb * MIC * LMWC / (this%kaff_lb + LMWC)
   else
     f_LM_MB = 0._r8
   endif
-!Equation 18
+
+!Equation 16
   ! MIC -> MAOM/LMWC
   if (MIC > 0._r8) then
     f_MB_turn = this%rate_bd * MIC ** 2.0_r8
   else
     f_MB_turn = 0._r8
   endif
-!Equation 20
+
+!Equation 18
   ! MAOM -> AGG
   if (MAOM > 0._r8) then
     f_MA_AG = this%rate_ma * scalar_wd * MAOM
   else
-    f_MA_AG = 0
+    f_MA_AG = 0._r8
   endif
-!Equation 22 WORKING
-  if (param_qmax > MAOM) then
-    param_pb = scalar_wd * this%kaff_bm * (param_qmax - MAOM)
-  else
-    param_pb = 0._r8
-  endif
-!Equation 25
-  ! microbial growth flux, but is not used in mass balance
-!WORKING
 
-!Equation 26
+!Equation 22
+  ! microbial growth flux, but is not used in mass balance
+
+!Equation 21
   ! MIC -> atmosphere
-  if (MIC > 0._r8) then
-  f_MB_atm = f_LM_MB * (this%cue_ref - this%cue_t * (forc_st - this%tae_ref))
+  if (MIC > 0._r8 .AND. LMWC > 0._r8) then
+    f_MB_atm = f_LM_MB * (1 - (this%cue_ref - this%cue_t * (forc_st - this%tae_ref)))
+  else
+    f_MB_atm = 0._r8
   endif
+
 !Equation 1
   POM = POM + forc_npp * this%param_pi + f_AG_break * this%param_pa - f_PO_AG - f_PO_LM
 
 !Equation 8
   LMWC = LMWC + forc_npp * (1._r8 - this%param_pi) - f_LM_leach + f_PO_LM - f_LM_MA - f_LM_MB + &
-  f_MB_turn * (1._r8 - param_pb) + f_MA_LM
+  f_MB_turn * (1._r8 - this%param_pb) + f_MA_LM
 
 !Equation 19
   AGG = AGG + f_MA_AG + f_PO_AG - f_AG_break
 
 !Equation 21
-  MAOM = MAOM + f_LM_MA - f_MA_LM + f_MB_turn * param_pb - f_MA_AG + f_AG_break * (1._r8 - this%param_pa)
+  MAOM = MAOM + f_LM_MA - f_MA_LM + f_MB_turn * this%param_pb - f_MA_AG + f_AG_break * (1._r8 - this%param_pa)
   
 !Equation 24
   MIC = MIC + f_LM_MB - f_MB_turn - f_MB_atm
 
 !Equation 27
-!WORKING
+  !writes CO2 flux, but already defined as f_MB_atm
   
 end subroutine decomp
   ! decomposition subroutine end
@@ -417,9 +405,8 @@ PROGRAM Millennial
 ! time-dependent parameters
   real(r8), dimension(:), allocatable :: scalar_wd
   real(r8), dimension(:), allocatable :: scalar_wb
-  real(r8), dimension(:), allocatable :: kaff_eq
+  real(r8), dimension(:), allocatable :: kaff_lm
   real(r8), dimension(:), allocatable :: param_qmax
-  real(r8), dimension(:), allocatable :: param_pb
   real(r8), dimension(:), allocatable :: vmax_pl
   real(r8), dimension(:), allocatable :: vmax_lb
 ! end of time-dependent parameters
@@ -431,7 +418,7 @@ PROGRAM Millennial
   real(r8)      :: initial_agg
 ! end of key variables
 
-  integer, parameter    :: soil_par_num = 29
+  integer, parameter    :: soil_par_num = 24
 ! character(len=256)      :: soil_par_f = './soilpara_in'   ! local file name
   integer           :: ier                      ! error code
   character(len=40)     :: soil_par_name(soil_par_num)  ! parameter name
@@ -461,9 +448,8 @@ PROGRAM Millennial
 
   allocate(scalar_wd(1:nr)) ; scalar_wd(1:nr) = 0._r8
   allocate(scalar_wb(1:nr)) ; scalar_wb(1:nr) = 0._r8
-  allocate(kaff_eq(1:nr))   ; kaff_eq(1:nr) = 0._r8
+  allocate(kaff_lm(1:nr))   ; kaff_lm(1:nr) = 0._r8
   allocate(param_qmax(1:nr)); param_qmax(1:nr) = 0._r8
-  allocate(param_pb(1:nr))  ; param_pb(1:nr) = 0._r8
   allocate(vmax_pl(1:nr))   ; vmax_pl(1:nr) = 0._r8
   allocate(vmax_lb(1:nr))   ; vmax_lb(1:nr) = 0._r8
   
@@ -509,11 +495,6 @@ PROGRAM Millennial
   this%kaff_des       = dummy(i); i = i + 1
   this%param_p1       = dummy(i); i = i + 1
   this%param_p2       = dummy(i); i = i + 1
-  this%param_pH       = dummy(i); i = i + 1
-  this%param_bulkd    = dummy(i); i = i + 1
-  this%param_c1       = dummy(i); i = i + 1
-  this%param_c2       = dummy(i); i = i + 1
-  this%param_clay     = dummy(i); i = i + 1
   this%kaff_lb        = dummy(i); i = i + 1
   this%alpha_lb       = dummy(i); i = i + 1
   this%eact_lb        = dummy(i); i = i + 1
@@ -526,7 +507,12 @@ PROGRAM Millennial
   this%lambda         = dummy(i); i = i + 1
   this%porosity       = dummy(i); i = i + 1
   this%kamin          = dummy(i); i = i + 1
-  this%doc_eq         = dummy(i)
+  this%param_pb       = dummy(i)
+
+  this%param_c1       = 0.86
+  this%param_clay     = 80
+  this%param_bulkd    = 1.0_r8
+  this%param_pH       = 7.0_r8
   this%gas_const      = 8.31446_r8 ! Universal gas constant (J/K/mol)
 
   write(*,*) "Model inializing! "
@@ -559,16 +545,16 @@ PROGRAM Millennial
 !These should be outside the loop and written as parameters, but might want to leave option of time dependence
 !Equation 12
   !Mayes 2012, SSAJ
-  kaff_eq(n) = this%doc_eq * exp(-this%param_p1 * this%param_pH - this%param_p2)
+  kaff_lm(n) = this%kaff_des * exp(-this%param_p1 * this%param_pH - this%param_p2)
 
 !Equation 13
   !Mayes 2012, SSAJ
-  param_qmax(n) = this%param_bulkd * exp(this%param_c1 * log(this%param_clay) + this%param_c2)
+  param_qmax(n) = this%param_bulkd * this%param_c1 * this%param_clay
 
 call soilwater(this, forc_sw(n), scalar_wd(n), scalar_wb(n))
 
 call decomp(this, forc_st(n), forc_npp(n), &
-    scalar_wd(n), scalar_wb(n), kaff_eq(n), param_qmax(n), param_pb(n), vmax_pl(n), vmax_lb(n), &
+    scalar_wd(n), scalar_wb(n), kaff_lm(n), param_qmax(n), vmax_pl(n), vmax_lb(n), &
     LMWC(n), POM(n), MIC(n), MAOM(n), AGG(n), f_AG_break(n), f_PO_AG(n),&
     f_MA_AG(n), f_PO_LM(n), f_LM_leach(n), f_LM_MA(n), f_LM_MB(n), f_MB_turn(n),&
     f_MA_LM(n), f_MB_atm(n))
@@ -589,7 +575,7 @@ call decomp(this, forc_st(n), forc_npp(n), &
   
   if(flag_output ==1) then
 call writeoutput(flag_annual, nr, &
-    scalar_wd, scalar_wb, kaff_eq, param_qmax, param_pb, vmax_pl, vmax_lb, &
+    scalar_wd, scalar_wb, kaff_lm, param_qmax, vmax_pl, vmax_lb, &
     LMWC, POM, MIC, MAOM, AGG, f_AG_break, f_PO_AG,&
     f_MA_AG, f_PO_LM, f_LM_leach, f_LM_MA, f_LM_MB, f_MB_turn,&
     f_MA_LM, f_MB_atm, outputfile)
@@ -620,9 +606,8 @@ call writeoutput(flag_annual, nr, &
 
   deallocate(scalar_wd)
   deallocate(scalar_wb)
-  deallocate(kaff_eq)
+  deallocate(kaff_lm)
   deallocate(param_qmax)
-  deallocate(param_pb)
   deallocate(vmax_pl)
   deallocate(vmax_lb)
 ! end of the allocation

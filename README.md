@@ -2,13 +2,18 @@
 
 This model develops upon the conceptual framework presented in the Biogeochemistry paper Abramoff et al. 2018 (http://dx.doi.org/10.1007/s10533-017-0409-7). 
 
-This repository branches from the original repository (https://github.com/email-clm/Millennial), containing the first version of the Millennial model framework written by Xiaofeng Xu. There are some differences between the equations presented in the Appendix of Abramoff et al. 2018 and the repository. They are noted as issues here (https://github.com/PNNL-TES/millenial/issues) where the model is being translated into R. This repository will further modify the original equations as part of ongoing model development.
-
-Files:\
+The model is organized in folders, first by programming language (R version of MillennialV2 and testing scripts forthcoming) and then by model version.
+Fortran:\
+MillennialV1 Files:\
 <b>main.F90</b> - original model code\
-<b>millennialv2.F90</b> - Rose's development version (subject to change)\
 <b>simulation</b> - folder with model input, output, and run scripts\
-<b>Table_3.xlsx, Table_3_with_params.xlsx</b> - some documentation
+<b>Table_3.xlsx, Table_3_with_params.xlsx</b> - some documentation\ 
+
+MillennialV2 Files:\
+<b>millennialv2.F90</b> - Rose's development version (subject to change)\
+<b>simulationv2</b> - folder with model input, output, and run scripts\
+
+This repository branches from the original repository (https://github.com/email-clm/Millennial), containing the first version of the Millennial model framework written by Xiaofeng Xu. There are some differences between the equations presented in the Appendix of Abramoff et al. 2018 and the repository. They are noted as issues here (https://github.com/PNNL-TES/millenial/issues) where the model is being translated into R. This repository will further modify the original equations as part of ongoing model development.
 
 ## Original Readme
 
