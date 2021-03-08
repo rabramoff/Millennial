@@ -33,7 +33,9 @@ derivs_Century <- function(step.num,state,parameters) {
   dSLOW <- f_ACTIVE_SLOW - f_SLOW_PASSIVE - f_SLOW_ATM
 
   dPASSIVE <- f_SLOW_PASSIVE + f_ACTIVE_PASSIVE - f_PASSIVE_ACTIVE - f_PASSIVE_ATM
+  
+  f_atm <- f_DOC_ATM + f_ACTIVE_ATM + f_SLOW_ATM + f_PASSIVE_ATM
             
-    return(list(c(dDOC, dACTIVE, dSLOW, dPASSIVE)))
+    return(list(c(dDOC, dACTIVE, dSLOW, dPASSIVE, f_atm)))
   })
 }

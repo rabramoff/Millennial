@@ -1,4 +1,4 @@
-derivs_V2_MM <- function(step.num,state,parameters) {
+derivs_V2_MM <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
   with(as.list(c(state,parameters)), {
           
 # Soil type properties  

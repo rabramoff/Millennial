@@ -1,4 +1,4 @@
-derivs_V1 <- function(step.num,state,parameters) {
+derivs_V1 <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
   with(as.list(c(state,parameters)), {
 
   # Equation 3 in Abramoff et al. (2017)
@@ -103,6 +103,6 @@ f_LM_MB_uptake = f_LM_MB_uptake - temp2
 
   dAGG <- (f_PO_SO_agg + f_MI_SO_agg - f_SO_PO_break - f_SO_MI_break)
 
-    return(list(c(dPOM, dLMWC, dAGG, dMIC, dMAOM)))
+    return(list(c(dPOM, dLMWC, dAGG, dMIC, dMAOM, f_MB_atm)))
   })
 }

@@ -1,0 +1,145 @@
+---
+title: "Millennial Model Tutorial"
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+Hello all! Welcome to the Millennial Model Tutorial file. 
+
+#A Brief Explanation of R Markdown
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook which combines executable code with readable instructions. When you execute code within the notebook, the results appear beneath the code. You can execute a chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. You can also execute code line-by-line as you would in a regular R script, usually by pressing *Ctrl+Enter*. 
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+##Load libraries
+First we need to load some libraries of functions that are needed to execute the model. If you do not have them installed you can install them by navigating to the Install button under the Packages tab in your file window or by executing the code
+```
+install.packages("name_of_package")
+```
+```{r}
+library(FME)
+```
+
+##Load files needed from the directory
+You will need to import both data and code from elsewhere in the Millennial directory. Specifically:
+
+* inputdata
+    + forc_st = soil temperature (degC)
+    + forc_sw = volumetric soil moisture (m3/m3)
+    + forc_npp = daily net primary production (gC/m2/d)
+* parameters
+* functions
+```{r}
+#Define YOUR path to the Millennial directory
+rootdir <- "/Users/rzabramoff/Documents/Millennial/"
+
+#Read in input data
+inputdata <- read.table(paste0(rootdir,"Fortran/MillennialV2/simulationv2/globalaverage.txt"))
+names(inputdata) <- c("forc_st","forc_sw","forc_npp") 
+
+#Read in parameters
+parameters.file <- read.table(paste0(rootdir,"Fortran/MillennialV2/simulationv2/soilpara_in_dyna.txt"))
+parameters <- as.list(parameters.file$V2)
+names(parameters) <- parameters.file$V1
+
+#Read in functions
+source(paste0(rootdir, "R/simulation/run_functions.R"))
+source(paste0(rootdir, "R/models/derivs_V2_MM.R"))
+```
+
+##Run the model
+Let's run the "official" version of the Millenial V2 model, which uses Michaelis-Menten kinetics. The name of the function that holds these equations is *derivs_V2_MM.R* which we imported in the last chunk.
+First we need to define some required site-level parameters.
+```{r}
+#Define site-level parameters
+parameters$param_pH <- 7 #pH
+parameters$param_bulkd <- 1000 #bulk density in kg soil m-3
+parameters$param_c1 <- 0.86 #slope of mineral C - clay relationship from Georgiou et al. in review
+parameters$param_claysilt <- 80 #clay and silt content in %
+
+#Run the model
+output <- Run_Model(inputdata,derivs_V2_MM,parameters,num.years=10,state=c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1, CO2=0))
+```
+
+##Plot model results
+```{r}
+plot.pools <- function(output){
+plot(output[,"time"],output[,"POM"], xlab="time (days)", ylab="pool (gC m-2)", col=1, type="l", ylim=c(0,max(output[,-1], na.rm=T)))
+lines(output[,"time"],output[,"LMWC"], col=2)
+lines(output[,"time"],output[,"AGG"], col=3)
+lines(output[,"time"],output[,"MIC"], col=4)
+lines(output[,"time"],output[,"MAOM"], col=5)
+legend("topleft", c("POM","LMWC","AGG","MIC","MAOM"), col=1:5, lwd=1)
+}
+
+#CO2 emissions are cumulative, so we have to take the difference between timesteps to plot the CO2 emission rate
+plot.co2 <- function(output){
+plot(output[1:(dim(output)[1]-1),"time"], diff(output[,"CO2"]), xlab="time (days)", ylab="co2 (gC m-2 d-1)", col=1, type="l")
+}
+
+plot.pools(output)
+plot.co2(output)
+```
+
+##Solve a steady state for spin-up purposes
+```{r}
+steadystate <- Solve_Model(inputdata,derivs_V2_MM,parameters,calc_eigens=1)
+```
+
+##Run model after spin up
+If we want to use the steady states calculated above to speed up the spin-up of the model, we just replace the state variable arguments to Run_Model with steadystate$y. Let's plot the model again to see how most of the pools are now at or are close to steady state.
+```{r}
+output.ss <- Run_Model(inputdata,derivs_V2_MM,parameters,num.years=10,state=c(steadystate$y, CO2=0))
+plot.pools(output.ss)
+plot.co2(output.ss)
+```
+
+#Warming Experiment
+Now let's do a simple warming experiment, by increasing the temperature of the soil by 5 degrees Celcius and plotting the difference in pools.
+```{r}
+warm.inputdata <- inputdata
+warm.inputdata$forc_st <- inputdata$forc_st + 5
+
+output.warm <- Run_Model(warm.inputdata,derivs_V2_MM,parameters,num.years=10,state=c(steadystate$y, CO2=0))
+
+#find ratio of warmed to ambient for all quantities except for time
+output.exp <- output.warm/output.ss
+output.exp[,"CO2"] <- c(NA,diff(output.warm[,"CO2"])/diff(output.ss[,"CO2"]))
+output.exp[,"time"] <- output.ss[,"time"]
+plot.pools(output.exp)
+
+plot(output.exp[,"time"], output.exp[,"CO2"], xlab="time (days)", ylab="co2 (gC m-2 d-1)", col=1, type="l")
+```
+
+#Make your own model version
+Lastly, let's make our own changes to the Millennial model. Locate the *derivs_V2_MM.R* function file in the ~YOURPATH/R/models/ directory. Remember that this is the file where the model equations are stored. Save a copy of this file and name it *derivs_V2_MYMODEL.R*, and also remember to change the name in the first line of the file where the name of the function is defined.
+
+Now you can make a change to the model structure. Perhaps you are interested to see how a first-order (i.e., linear) microbial turnover function is different from the density-dependent microbial turnover function that is currently in the model. To remove this effect, go to equation 16:
+```
+f_MB_turn = parameters$rate_bd * MIC^2.0
+```
+and comment out the exponent that makes microbial turnover a function of the size of the microbial biomass pool
+```
+f_MB_turn = parameters$rate_bd * MIC#^2.0
+```
+Now load your new model and plot the difference between this model and default model. Which pool(s) does it affect? Does that make sense to you?
+```{r}
+source(paste0(rootdir, "R/models/derivs_V2_MYMODEL.R"))
+#Run the model
+output.my <- Run_Model(inputdata,derivs_V2_MYMODEL,parameters,num.years=10,state=c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1, CO2=0))
+
+#find ratio of new model version to default version all quantities except for time
+output.dev <- output.my/output
+output.dev[,"CO2"] <- c(NA,diff(output.my[,"CO2"])/diff(output[,"CO2"]))
+output.dev[,"time"] <- output.my[,"time"]
+plot.pools(output.dev)
+
+plot(output.dev[,"time"], output.dev[,"CO2"], xlab="time (days)", ylab="co2 (gC m-2 d-1)", col=1, type="l")
+```
+
+#Extra credit
+* Make a new parameter txt file and change one or more of the parameter values. Read in the new parameter file and run the model with new parameters. Add the code needed to run both versions of the parameter file and compare the two different outputs in a plot.
+* Try other model versions from the /R/models folder. Load the new model into this main script and change all instances of "derivs_V2_MM" to the new model, or copy the code to run the two model versions side-by-side and plot their outputs.
+
