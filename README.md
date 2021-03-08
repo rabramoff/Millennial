@@ -2,16 +2,27 @@
 
 This model develops upon the conceptual framework presented in the Biogeochemistry paper Abramoff et al. 2018 (http://dx.doi.org/10.1007/s10533-017-0409-7). 
 
-The model is organized in folders, first by programming language (R version of MillennialV2 and testing scripts forthcoming) and then by model version.
-Fortran:\
-MillennialV1 Files:\
-<b>main.F90</b> - original model code\
-<b>simulation</b> - folder with model input, output, and run scripts\
-<b>Table_3.xlsx, Table_3_with_params.xlsx</b> - some documentation\ 
+The model is organized in folders, first by programming language and then by model version.
+### Fortran:
+#### MillennialV1 Files:
+&nbsp;&nbsp;&nbsp; <b>main.F90</b> - original model code\
+&nbsp;&nbsp;&nbsp; <b>simulation</b> - folder with model input, output, and run scripts\
+&nbsp;&nbsp;&nbsp; <b>Table_3.xlsx, Table_3_with_params.xlsx</b> - some documentation
 
-MillennialV2 Files:\
-<b>millennialv2.F90</b> - Rose's development version (subject to change)\
-<b>simulationv2</b> - folder with model input, output, and run scripts\
+#### MillennialV2 Files:
+&nbsp;&nbsp;&nbsp; <b>millennialv2.F90</b> - Rose's development version (subject to change)\
+&nbsp;&nbsp;&nbsp; <b>simulationv2</b> - folder with model input, output, and run scripts
+
+### R (under development):
+#### models:
+&nbsp;&nbsp;&nbsp; <b>derivs_Century.R</b> - Century model equations\
+&nbsp;&nbsp;&nbsp; <b>derivs_V1.R</b> - Millennial V1 model equations\
+&nbsp;&nbsp;&nbsp; <b>derivs_V2_ECA.R</b> - Millennial V2 model equations with ECA kinetics\
+&nbsp;&nbsp;&nbsp; <b>derivs_V2_MM.R</b> - Millennial V2 model equations with Michaelis-Menten kinetics\
+&nbsp;&nbsp;&nbsp; <b>derivs_V2_LIN.R</b> - Millennial V2 model equations with linear kinetics
+
+#### simulation:
+&nbsp;&nbsp;&nbsp; <b>run_functions.R</b> - run script
 
 This repository branches from the original repository (https://github.com/email-clm/Millennial), containing the first version of the Millennial model framework written by Xiaofeng Xu. There are some differences between the equations presented in the Appendix of Abramoff et al. 2018 and the repository. They are noted as issues here (https://github.com/PNNL-TES/millenial/issues) where the model is being translated into R. This repository will further modify the original equations as part of ongoing model development.
 
