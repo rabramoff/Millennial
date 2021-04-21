@@ -5,7 +5,7 @@ derivs_V1 <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
   t_scalar <- (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 * (forc_st(step.num) - parameters$t1))) /
     (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 *(30.0 - parameters$t1)))
 
-  w_scalar <- 1.0 / (1.0 + parameters$w1 * exp(-parameters$w2 * forc_sw(step.num)))
+  w_scalar <- 1.0 / (1.0 + parameters$w1 * exp(-parameters$w2 * forc_sw(step.num)/0.35))
 
   # Equation 8 in Abramoff et al. (2017) except Xiaofeng removed water impact after review at GBC, June 2017
   f_LM_leaching <- LMWC * parameters$k_leaching * t_scalar #* w_scalar ! Xiaofeng removed water impact, after review at GBC June,2017         
@@ -18,7 +18,7 @@ derivs_V1 <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
 #not in equations .. removed, but in main.F90 is still in ODEs
   
   # LMWC -> MINERAL: This desorption function is from Mayes 2012, SSAJ
-  klmc_min <- (10.0 ^ (-0.186 * 7 - 0.216)) / 24.0
+  klmc_min <- (10.0 ^ (-0.186 * parameters$param_pH - 0.216)) / 24.0
 
   # Equation 11 in Abramoff et al. (2017)
   # "Qmax is the maximum sorption capacity (mg C kg-1 dry soil) and is converted to
@@ -26,7 +26,7 @@ derivs_V1 <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
   # a 1 m soil profile. The parameters c1 and c2 are the coefficients for computing
   # Qmax from the clay content in percent, derived from Mayes et al. (2012)."
   # 2019-03-09 note: per Xiaofeng Xu, they ended up using 1.0 for bulk density
-  Qmax <- 10.0 ^ (parameters$c1 * log(0.4 * 100.0) + parameters$c2 - 0.50)
+  Qmax <- 10.0 ^ (parameters$c1 * log(parameters$param_clay * 100.0) + parameters$c2 - 0.50)
 
   f_LM_MI_sor <- (((klmc_min * Qmax * LMWC ) / (2 + klmc_min * LMWC) - MAOM) / Qmax + 0.0015) * LMWC / 50 * t_scalar * w_scalar
 

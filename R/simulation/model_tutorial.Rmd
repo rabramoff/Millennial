@@ -40,7 +40,7 @@ inputdata <- read.table(paste0(rootdir,"Fortran/MillennialV2/simulationv2/global
 names(inputdata) <- c("forc_st","forc_sw","forc_npp") 
 
 #Read in parameters
-parameters.file <- read.table(paste0(rootdir,"Fortran/MillennialV2/simulationv2/soilpara_in_dyna.txt"))
+parameters.file <- read.table(paste0(rootdir,"Fortran/MillennialV2/simulationv2/soilpara_in_fit.txt"))
 parameters <- as.list(parameters.file$V2)
 names(parameters) <- parameters.file$V1
 
@@ -58,6 +58,7 @@ parameters$param_pH <- 7 #pH
 parameters$param_bulkd <- 1000 #bulk density in kg soil m-3
 parameters$param_c1 <- 0.86 #slope of mineral C - clay relationship from Georgiou et al. in review
 parameters$param_claysilt <- 80 #clay and silt content in %
+parameters$param_clay #clay content need for Millennial V1 only
 
 #Run the model
 output <- Run_Model(inputdata,derivs_V2_MM,parameters,num.years=10,state=c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1, CO2=0))

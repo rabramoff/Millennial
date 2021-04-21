@@ -276,7 +276,7 @@ subroutine decomp(this, forc_st, forc_npp, &
 
 !Equation 14
   ! LMWC -> MIC
-  if (LMWC > 0._r8) then
+  if (LMWC > 0._r8 .AND. MIC > 0._r8) then
     f_LM_MB = vmax_lb * scalar_wb * MIC * LMWC / (this%kaff_lb + LMWC)
   else
     f_LM_MB = 0._r8
@@ -344,7 +344,7 @@ implicit none
  scalar_wd = (forc_sw / this%porosity) ** 0.5_r8
 
  !Equation 4
- scalar_wb = exp(this%lambda * this%matpot) * (this%kamin + (1._r8 - this%kamin) * &
+ scalar_wb = exp(this%lambda * -this%matpot) * (this%kamin + (1._r8 - this%kamin) * &
   ((this%porosity - forc_sw) / this%porosity) ** 0.5_r8) * scalar_wd
 
 end subroutine soilwater
@@ -413,9 +413,9 @@ PROGRAM Millennial
 
   real(r8)      :: initial_pom
   real(r8)      :: initial_lmwc
+  real(r8)      :: initial_agg
   real(r8)      :: initial_mic
   real(r8)      :: initial_maom
-  real(r8)      :: initial_agg
 ! end of key variables
 
   integer, parameter    :: soil_par_num = 24
@@ -511,7 +511,7 @@ PROGRAM Millennial
 
   this%param_c1       = 0.86
   this%param_clay     = 80
-  this%param_bulkd    = 1.0_r8
+  this%param_bulkd    = 1000_r8
   this%param_pH       = 7.0_r8
   this%gas_const      = 8.31446_r8 ! Universal gas constant (J/K/mol)
 
@@ -521,7 +521,7 @@ PROGRAM Millennial
     
   open(unit = 11, file=initialfile)
     
-  read (11,*,iostat=ier) initial_pom, initial_lmwc, initial_mic, initial_maom, initial_agg
+  read (11,*,iostat=ier) initial_pom, initial_lmwc, initial_agg, initial_mic, initial_maom
 
   if (ier /= 0) then
   write(*,*)'model inializing failed !'
@@ -534,11 +534,11 @@ PROGRAM Millennial
   call readdata(nr, forc_st, forc_sw, forc_npp)
   print *, 'read data end'
   
-  LMWC(1)=initial_lmwc
   POM(1)=initial_pom
-  MIC(1)=initial_mic
-  MAOM(1)=initial_maom
+  LMWC(1)=initial_lmwc
   AGG(1)=initial_agg
+  MAOM(1)=initial_maom
+  MIC(1)=initial_mic
 
   do n = 1, nr
 

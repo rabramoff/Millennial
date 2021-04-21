@@ -4,7 +4,7 @@ derivs_V2_LIN <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
 # Soil type properties  
   #Equation 11
   #Mayes 2012, SSAJ
-  kaff_lm = exp(-parameters$param_p1 * 7 - parameters$param_p2) * parameters$kaff_des
+  kaff_lm = exp(-parameters$param_p1 * parameters$param_pH - parameters$param_p2) * parameters$kaff_des
 
   #Equation 12
   #Georgiou in review

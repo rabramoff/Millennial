@@ -1,4 +1,4 @@
-derivs_V2_ECA <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
+derivs_V2_MYMODEL <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
   with(as.list(c(state,parameters)), {
           
 # Soil type properties  
@@ -28,7 +28,7 @@ derivs_V2_ECA <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
   #Equation 2
     # POM -> LMWC
     if(POM>0 && MIC>0){
-      f_PO_LM = vmax_pl * scalar_wd * POM * MIC / (parameters$kaff_pl + POM + MIC)
+      f_PO_LM = vmax_pl * scalar_wd * POM * MIC / (parameters$kaff_pl + MIC)
     }else{
       f_PO_LM=0
     }
@@ -79,7 +79,7 @@ derivs_V2_ECA <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
   #Equation 14
     # LMWC -> MIC
     if(LMWC>0 && MIC>0){
-      f_LM_MB = vmax_lb * scalar_wb * MIC * LMWC / (parameters$kaff_lb + MIC + LMWC)
+      f_LM_MB = vmax_lb * scalar_wb * MIC * LMWC / (parameters$kaff_lb + LMWC)
     }else{
       f_LM_MB=0
     }
@@ -87,7 +87,7 @@ derivs_V2_ECA <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
   #Equation 16
     # MIC -> MAOM/LMWC
     if(MIC>0){
-      f_MB_turn = parameters$rate_bd * MIC^2.0
+      f_MB_turn = parameters$rate_bd * MIC#^2.0
     }else{
       f_MB_turn=0
     }

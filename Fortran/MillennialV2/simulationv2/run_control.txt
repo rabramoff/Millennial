@@ -1,5 +1,5 @@
 3650
-soilpara_in_dyna.txt
+soilpara_in_fit.txt
 1
 0
 outputcontrol.txt
