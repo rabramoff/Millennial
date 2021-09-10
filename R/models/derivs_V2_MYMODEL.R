@@ -8,7 +8,7 @@ derivs_V2_MYMODEL <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp
 
   #Equation 12
   #Georgiou in review
-  param_qmax = parameters$param_bulkd * parameters$param_c1 * parameters$param_claysilt 
+  param_qmax = parameters$param_bulkd * parameters$param_pc * parameters$param_claysilt 
               
 # Hydrological properties
 

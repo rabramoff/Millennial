@@ -29,7 +29,7 @@ type, public :: soil_type
   real(p8)    :: porosity ! total porosity
   real(p8)    :: kamin ! minimum relative rate in saturated soil
   real(p8)	  :: param_pb
-  real(p8)    :: param_c1
+  real(p8)    :: param_pc
   real(p8)    :: param_clay
   real(p8)    :: param_qmax
   real(p8)    :: param_bulkd
@@ -509,7 +509,7 @@ PROGRAM Millennial
   this%kamin          = dummy(i); i = i + 1
   this%param_pb       = dummy(i)
 
-  this%param_c1       = 0.86
+  this%param_pc       = 0.86
   this%param_clay     = 80
   this%param_bulkd    = 1000_r8
   this%param_pH       = 7.0_r8
@@ -549,7 +549,7 @@ PROGRAM Millennial
 
 !Equation 13
   !Mayes 2012, SSAJ
-  param_qmax(n) = this%param_bulkd * this%param_c1 * this%param_clay
+  param_qmax(n) = this%param_bulkd * this%param_pc * this%param_clay
 
 call soilwater(this, forc_sw(n), scalar_wd(n), scalar_wb(n))
 
