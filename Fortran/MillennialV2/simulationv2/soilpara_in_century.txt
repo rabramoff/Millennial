@@ -13,4 +13,10 @@ slow_to_active 0.42
 slow_to_passive 0.03
 passive_to_active 0.45
 active_to_passive 0.004
-litter_to_slow 0.66
+k_strlitter 0.1
+k_metlitter 0.045
+input_to_strlitter 0.66
+metlitter_to_active 0.45
+strlitter_to_active 0.5
+strlitter_to_slow 0.7
+LigFrac 0.2

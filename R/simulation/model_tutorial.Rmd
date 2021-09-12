@@ -1,5 +1,7 @@
 ---
 title: "Millennial Model Tutorial"
+author: "Rose Abramoff"
+date: "Sep 11, 2021"
 output:
   html_notebook: default
   html_document:
@@ -35,18 +37,21 @@ You will need to import both data and code from elsewhere in the Millennial dire
 #Define YOUR path to the Millennial directory
 rootdir <- "/Users/rzabramoff/Documents/Millennial/"
 
-#Read in input data
+#Read in input data - Described in Table A1 of Abramoff et al. (2021)
+##forc_st: soil temperature in degrees Celcius
+##forc_sw: volumetric soil moisture in mm3/mm3
+##forc_npp: daily plant inputs in gC/m2/day
 inputdata <- read.table(paste0(rootdir,"Fortran/MillennialV2/simulationv2/globalaverage.txt"))
 names(inputdata) <- c("forc_st","forc_sw","forc_npp") 
 
-#Read in parameters
+#Read in parameters - Described in Table A1 of Abramoff et al. (2021)
 parameters.file <- read.table(paste0(rootdir,"Fortran/MillennialV2/simulationv2/soilpara_in_fit.txt"))
 parameters <- as.list(parameters.file$V2)
 names(parameters) <- parameters.file$V1
 
 #Read in functions
-source(paste0(rootdir, "R/simulation/run_functions.R"))
-source(paste0(rootdir, "R/models/derivs_V2_MM.R"))
+source(paste0(rootdir, "R/simulation/run_functions.R")) #R script that contains calls to run model
+source(paste0(rootdir, "R/models/derivs_V2_MM.R")) #The official version of Millennial V2
 ```
 
 ##Run the model
@@ -56,16 +61,22 @@ First we need to define some required site-level parameters.
 #Define site-level parameters
 parameters$param_pH <- 7 #pH
 parameters$param_bulkd <- 1000 #bulk density in kg soil m-3
-parameters$param_c1 <- 0.86 #slope of mineral C - clay relationship from Georgiou et al. in review
+parameters$param_pc <- 0.86 #slope of mineral C - clay relationship from Georgiou et al. in review
 parameters$param_claysilt <- 80 #clay and silt content in %
-parameters$param_clay #clay content need for Millennial V1 only
 
 #Run the model
+##This function takes as arguments:
+##1 input data
+##2 model equations
+##3 parameters
+##4 length of model run in years (optional; default = 100)
+##5 initial states of pools (optional; default = 1 for all pools and 0 for CO2 flux)
 output <- Run_Model(inputdata,derivs_V2_MM,parameters,num.years=10,state=c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1, CO2=0))
 ```
 
 ##Plot model results
 ```{r}
+#Define function which plots the evolution of Millennial model pools over time
 plot.pools <- function(output){
 plot(output[,"time"],output[,"POM"], xlab="time (days)", ylab="pool (gC m-2)", col=1, type="l", ylim=c(0,max(output[,-1], na.rm=T)))
 lines(output[,"time"],output[,"LMWC"], col=2)
@@ -75,17 +86,25 @@ lines(output[,"time"],output[,"MAOM"], col=5)
 legend("topleft", c("POM","LMWC","AGG","MIC","MAOM"), col=1:5, lwd=1)
 }
 
-#CO2 emissions are cumulative, so we have to take the difference between timesteps to plot the CO2 emission rate
+#Define function which plots the modeled CO2 emissions over time
+##CO2 emissions are cumulative, so we have to take the difference between timesteps to plot the CO2 emission rate
 plot.co2 <- function(output){
 plot(output[1:(dim(output)[1]-1),"time"], diff(output[,"CO2"]), xlab="time (days)", ylab="co2 (gC m-2 d-1)", col=1, type="l")
 }
 
+#Make the plots
 plot.pools(output)
 plot.co2(output)
 ```
 
 ##Solve a steady state for spin-up purposes
 ```{r}
+##This function takes as arguments:
+##1 input data
+##2 model equations
+##3 parameters
+##4 whether or not to calculate the eigenvalues (optional; default = 0; 0 = no, 1 = yes)
+##5 initial states of pools (optional; default = 1 for all pools and 0 for CO2 flux)
 steadystate <- Solve_Model(inputdata,derivs_V2_MM,parameters,calc_eigens=1)
 ```
 
@@ -117,11 +136,11 @@ plot(output.exp[,"time"], output.exp[,"CO2"], xlab="time (days)", ylab="co2 (gC 
 #Make your own model version
 Lastly, let's make our own changes to the Millennial model. Locate the *derivs_V2_MM.R* function file in the ~YOURPATH/R/models/ directory. Remember that this is the file where the model equations are stored. Save a copy of this file and name it *derivs_V2_MYMODEL.R*, and also remember to change the name in the first line of the file where the name of the function is defined.
 
-Now you can make a change to the model structure. Perhaps you are interested to see how a first-order (i.e., linear) microbial turnover function is different from the density-dependent microbial turnover function that is currently in the model. To remove this effect, go to equation 16:
+Now you can make a change to the model structure. Perhaps you are interested to see how a first-order (i.e., linear) microbial mortality function is different from the density-dependent microbial mortality function that is currently in the model. To remove this effect, go to equation 16:
 ```
 f_MB_turn = parameters$rate_bd * MIC^2.0
 ```
-and comment out the exponent that makes microbial turnover a function of the size of the microbial biomass pool
+and comment out the exponent that makes microbial mortality a function of the size of the microbial biomass pool. Remember that this change effects the units of the parameter rate_bd, and in a real analysis you would probably need to change the value of this parameter accordingly. But for the sake of learning how to modify the model structure, let's just try it.
 ```
 f_MB_turn = parameters$rate_bd * MIC#^2.0
 ```
@@ -143,4 +162,5 @@ plot(output.dev[,"time"], output.dev[,"CO2"], xlab="time (days)", ylab="co2 (gC 
 #Extra credit
 * Make a new parameter txt file and change one or more of the parameter values. Read in the new parameter file and run the model with new parameters. Add the code needed to run both versions of the parameter file and compare the two different outputs in a plot.
 * Try other model versions from the /R/models folder. Load the new model into this main script and change all instances of "derivs_V2_MM" to the new model, or copy the code to run the two model versions side-by-side and plot their outputs.
+* Make other model structural changes. For example, as in Century, temperature effects (Equation 3, 14) and water effects (Equation 4, 5) can be added to other processes depending on the particular ecosystem or situation for which it is being applied. Remember that the water scalar represents three different processes, as described in Abramoff et al. (2021): diffusion limitation (Equation 5), the effects of matric potential, and oxygen limitation (Equation 4). What processes in the model may limited by oxygen limitation but not diffusion, and vice versa?
 

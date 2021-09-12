@@ -1,6 +1,13 @@
-#Wrappers that take input data, model derivatives, and parameters as required arguments
-#Runtime, state, and whether or not to calculate and save eigenvalues are optional arguments
+#Title: run_functions.R
+#Author: Rose Abramoff
+#Date: Sep 11, 2021
 
+##This function takes as arguments:
+##1 input data
+##2 model equations
+##3 parameters
+##4 length of model run in years (optional; default = 100)
+##5 initial states of pools (optional; default = 1 for all pools and 0 for CO2 flux)
 Run_Model  <- function(inputdata,derivs,parameters,num.years=100,state=c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1,CO2=0)) {
 
     #Define runtime
@@ -17,7 +24,12 @@ Run_Model  <- function(inputdata,derivs,parameters,num.years=100,state=c(POM = 1
     return(output)
 }
 
-
+##This function takes as arguments:
+##1 input data
+##2 model equations
+##3 parameters
+##4 whether or not to calculate the eigenvalues (optional; default = 0; 0 = no, 1 = yes)
+##5 initial states of pools (optional; default = 1 for all pools and 0 for CO2 flux)
 Solve_Model  <- function(inputdata,derivs,parameters,calc_eigens=0,state=c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1)) {
 
     SStime = 1000*365 #time at which steady state solution is evaluated

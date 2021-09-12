@@ -1,4 +1,9 @@
+! main program start
 module soilType
+! History
+! Xiaofeng Xu created Millennial V1 to play with Millennial model structure (ICOS workshop Mar 14-16, 2016 in Boulder, CO)
+! Rose Abramoff modified the equations here to create Millennial V2, described in Abramoff et al. (2021)
+! Last updated on Sep 11, 2021
 
   implicit none
   integer,parameter   :: p8 = selected_real_kind(12)  !8 byte real
@@ -24,10 +29,10 @@ type, public :: soil_type
   real(p8)    :: cue_ref
   real(p8)    :: cue_t
   real(p8)    :: tae_ref
-  real(p8)    :: matpot ! soil matric potential kPa
-  real(p8)    :: lambda ! dependence of respiration on soil matric potential kPa
-  real(p8)    :: porosity ! total porosity
-  real(p8)    :: kamin ! minimum relative rate in saturated soil
+  real(p8)    :: matpot
+  real(p8)    :: lambda 
+  real(p8)    :: porosity
+  real(p8)    :: kamin
   real(p8)	  :: param_pb
   real(p8)    :: param_pc
   real(p8)    :: param_clay
@@ -195,7 +200,7 @@ subroutine decomp(this, forc_st, forc_npp, &
   implicit none
   class(soil_type), intent(inout) :: this
   integer,parameter :: r8 = selected_real_kind(12)  ! 8 byte real
-  real(r8), intent(in) :: forc_st           ! soil temperature (Kelvin)  (-nlevsno+1:nlevgrnd)
+  real(r8), intent(in) :: forc_st           
   real(r8), intent(in) :: forc_npp
   real(r8), intent(in) :: scalar_wd
   real(r8), intent(in) :: scalar_wb
@@ -231,7 +236,7 @@ subroutine decomp(this, forc_st, forc_npp, &
     f_PO_LM = 0._r8
   endif
 
-!Equation 6
+!Equation 5
   ! POM -> AGG
   if (POM > 0._r8) then
     f_PO_AG = this%rate_pa * scalar_wd * POM
@@ -239,15 +244,15 @@ subroutine decomp(this, forc_st, forc_npp, &
     f_PO_AG = 0._r8
   endif
 
-!Equation 7
-  ! AGG -> MAOM
+!Equation 6
+  ! AGG -> MAOM + POM
   if (AGG > 0._r8) then
     f_AG_break = this%rate_break * scalar_wd * AGG
   else
     f_AG_break = 0._r8
   endif
 
-!Equation 9
+!Equation 8
   ! LMWC -> out of system leaching
   if (LMWC > 0._r8) then
     f_LM_leach = this%rate_leach * scalar_wd * LMWC
@@ -255,7 +260,7 @@ subroutine decomp(this, forc_st, forc_npp, &
     f_LM_leach = 0._r8
   endif
 
-!Equation 10
+!Equation 9
   ! LMWC -> MAOM
   if (LMWC > 0._r8 .AND. MAOM > 0._r8) then
     f_LM_MA = scalar_wd * kaff_lm * LMWC * (1 - MAOM / param_qmax)
@@ -263,7 +268,7 @@ subroutine decomp(this, forc_st, forc_npp, &
     f_LM_MA = 0._r8
   endif
 
-!Equation 13
+!Equation 12
   ! MAOM -> LMWC
   if (MAOM > 0._r8) then
     f_MA_LM = this%kaff_des * MAOM / param_qmax
@@ -271,10 +276,10 @@ subroutine decomp(this, forc_st, forc_npp, &
     f_MA_LM = 0._r8
   endif
 
-!Equation 15
+!Equation 4
   vmax_lb = this%alpha_lb * exp(-this%eact_lb / (this%gas_const * (forc_st + 273.15_r8)))
 
-!Equation 14
+!Equation 13
   ! LMWC -> MIC
   if (LMWC > 0._r8 .AND. MIC > 0._r8) then
     f_LM_MB = vmax_lb * scalar_wb * MIC * LMWC / (this%kaff_lb + LMWC)
@@ -283,7 +288,7 @@ subroutine decomp(this, forc_st, forc_npp, &
   endif
 
 !Equation 16
-  ! MIC -> MAOM/LMWC
+  ! MIC -> MAOM + LMWC
   if (MIC > 0._r8) then
     f_MB_turn = this%rate_bd * MIC ** 2.0_r8
   else
@@ -316,17 +321,14 @@ subroutine decomp(this, forc_st, forc_npp, &
   LMWC = LMWC + forc_npp * (1._r8 - this%param_pi) - f_LM_leach + f_PO_LM - f_LM_MA - f_LM_MB + &
   f_MB_turn * (1._r8 - this%param_pb) + f_MA_LM
 
-!Equation 19
+!Equation 17
   AGG = AGG + f_MA_AG + f_PO_AG - f_AG_break
 
-!Equation 21
+!Equation 19
   MAOM = MAOM + f_LM_MA - f_MA_LM + f_MB_turn * this%param_pb - f_MA_AG + f_AG_break * (1._r8 - this%param_pa)
   
-!Equation 24
+!Equation 20
   MIC = MIC + f_LM_MB - f_MB_turn - f_MB_atm
-
-!Equation 27
-  !writes CO2 flux, but already defined as f_MB_atm
   
 end subroutine decomp
   ! decomposition subroutine end
@@ -340,10 +342,10 @@ implicit none
   real(r8), intent(out)   :: scalar_wd
   real(r8), intent(out)   :: scalar_wb
 
- !Equation 5
+ !Equation 4
  scalar_wd = (forc_sw / this%porosity) ** 0.5_r8
 
- !Equation 4
+ !Equation 15
  scalar_wb = exp(this%lambda * -this%matpot) * (this%kamin + (1._r8 - this%kamin) * &
   ((this%porosity - forc_sw) / this%porosity) ** 0.5_r8) * scalar_wd
 
@@ -542,13 +544,11 @@ PROGRAM Millennial
 
   do n = 1, nr
 
-!These should be outside the loop and written as parameters, but might want to leave option of time dependence
-!Equation 12
-  !Mayes 2012, SSAJ
+!These could be outside the loop and written as parameters, but here leaving the option of time dependence
+!Equation 10
   kaff_lm(n) = this%kaff_des * exp(-this%param_p1 * this%param_pH - this%param_p2)
 
-!Equation 13
-  !Mayes 2012, SSAJ
+!Equation 11
   param_qmax(n) = this%param_bulkd * this%param_pc * this%param_clay
 
 call soilwater(this, forc_sw(n), scalar_wd(n), scalar_wb(n))
@@ -559,7 +559,7 @@ call decomp(this, forc_st(n), forc_npp(n), &
     f_MA_AG(n), f_PO_LM(n), f_LM_leach(n), f_LM_MA(n), f_LM_MB(n), f_MB_turn(n),&
     f_MA_LM(n), f_MB_atm(n))
  
-! updating the pool after each iteration 
+! Updating the pool after each iteration 
   if(n < nr) then
   LMWC(n+1)=LMWC(n)
   POM(n+1)=POM(n)

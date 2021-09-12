@@ -1,3 +1,8 @@
+#Title: derivs_V1.R
+#Author: Rose Abramoff translated Xiaofeng Xu's original fortran code into R. 
+#Ben Bond-Lamberty also has a prototype R translation that is probably more organized than this one: https://github.com/PNNL-TES/millenial/tree/master/R
+#Date: Sep 11, 2021
+
 derivs_V1 <- function(step.num,state,parameters,forc_st,forc_sw,forc_npp) {
   with(as.list(c(state,parameters)), {
 
