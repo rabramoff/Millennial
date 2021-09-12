@@ -1,6 +1,6 @@
 # Millennial
 
-This model develops upon the conceptual framework presented in the Biogeochemistry paper Abramoff et al. 2018 (http://dx.doi.org/10.1007/s10533-017-0409-7). 
+This model develops upon the conceptual framework presented in the Biogeochemistry paper Abramoff et al. (2018) (http://dx.doi.org/10.1007/s10533-017-0409-7). 
 This code is publicly available but should be used for training purposes only until the Millennial Version 2 description and evaluation paper is published. Once published, the citation and licensing information will be added here. Until then, please let Rose Abramoff know if you have any activities planned using this model version.
 
 The model is organized in folders, first by programming language and then by model version.
@@ -11,10 +11,32 @@ The model is organized in folders, first by programming language and then by mod
 &nbsp;&nbsp;&nbsp; <b>Table_3.xlsx, Table_3_with_params.xlsx</b> - some documentation
 
 #### MillennialV2 Files:
-&nbsp;&nbsp;&nbsp; <b>millennialv2.F90</b> - Rose's development version (subject to change)\
+&nbsp;&nbsp;&nbsp; <b>millennialv2.F90</b> - main model script\
 &nbsp;&nbsp;&nbsp; <b>simulationv2</b> - folder with model input, output, and run scripts
 
-### R (under development):
+Similar to Millennial V1, Millennial V2's code is fully contained within the fortran script <b>millennialv2.F90</b>. The model can be compiled by calling from the folder <b>Fortran/MillennialV2/</b>:
+```
+gfortran -o name_of_executable millennialv2.F90
+```
+The model can be run by calling from the folder <b>Fortran/MillennialV2/simulationv2</b>:
+```
+../name_of_executable<run_control.txt
+```
+The executable takes one argument: <b>run_control.txt</b>\
+This is an example of an input file that can be modified by the user.\
+The arguments contained in the input file provide the information prompted by <b>millennialv2.F90</b> lines 429-443 and lines 520-537.\
+Specifically,
+1. Number of total simulation steps
+2. Name of the parameter file
+3. Whether or not to save output (1 = Yes, 0 = No)
+4. Annual or daily output (1 = Annual, 0 = Daily)
+5. Name of the file for saving model output
+6. Name of the file for initializing the model pools
+7. Input data containing the soil temperature in degrees Celsius, volumetric soil moisture in m3/m3, and NPP in gC/m2/day.
+
+Examples of all files and their formats are provided in the folder <b>Fortran/MillennialV2/simulationv2</b>.
+
+### R:
 #### models:
 &nbsp;&nbsp;&nbsp; <b>derivs_Century.R</b> - Century model equations\
 &nbsp;&nbsp;&nbsp; <b>derivs_V1.R</b> - Millennial V1 model equations\
@@ -23,9 +45,10 @@ The model is organized in folders, first by programming language and then by mod
 &nbsp;&nbsp;&nbsp; <b>derivs_V2_LIN.R</b> - Millennial V2 model equations with linear kinetics
 
 #### simulation:
-&nbsp;&nbsp;&nbsp; <b>run_functions.R</b> - run script
+&nbsp;&nbsp;&nbsp; <b>run_functions.R</b> - run script\
+&nbsp;&nbsp;&nbsp; <b>model_tutorial.Rmd</b> - tutorial with explanation of how to run the model as well as examples and exercises
 
-This repository branches from the original repository (https://github.com/email-clm/Millennial), containing the first version of the Millennial model framework written by Xiaofeng Xu. There are some differences between the equations presented in the Appendix of Abramoff et al. 2018 and the repository. They are noted as issues here (https://github.com/PNNL-TES/millenial/issues) where the model is being translated into R. This repository will further modify the original equations as part of ongoing model development.
+This repository branches from the original repository (https://github.com/email-clm/Millennial), containing the first version of the Millennial model framework written by Xiaofeng Xu. There are some differences between the equations presented in the Appendix of Abramoff et al. (2018) and the repository. They are noted as issues here (https://github.com/PNNL-TES/millenial/issues) where the model is being translated into R. This repository may further modify the original equations as part of ongoing model development.
 
 ## Original Readme
 
