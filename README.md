@@ -1,7 +1,7 @@
 # Millennial
 
-This model develops upon the conceptual framework presented in the Biogeochemistry paper Abramoff et al. (2018) (http://dx.doi.org/10.1007/s10533-017-0409-7). 
-This code is publicly available but should be used for training purposes only until the Millennial Version 2 description and evaluation paper is published. Once published, the citation and licensing information will be added here. Until then, please let Rose Abramoff know if you have any activities planned using this model version.
+Millennial Version 2 develops upon the conceptual framework presented in the Biogeochemistry paper Abramoff et al. (2018) (http://dx.doi.org/10.1007/s10533-017-0409-7). 
+The Millennial Version 2 description and evaluation paper is currently under review. Until citation information is added to this repository, please contact Rose Abramoff so she can keep you updated.
 
 The model is organized in folders, first by programming language and then by model version.
 ### Fortran:
