@@ -1,0 +1,504 @@
+---
+title: "Site_Data_for_Millennial"
+author: "Rose Abramoff"
+date: "Sep 9, 2021"
+output: html_document
+---
+```
+This R notebook prepares the site data from it's original forms so that it can be used to run the Millennial model. Data are described in Abramoff et al. (2021), and their references summarized in Table 2.
+```
+#Load Libraries and Set File Paths
+```{r}
+library(readxl)
+library(tidyverse)
+library(ggplot2)
+library(raster)
+library(ncdf4)
+
+datadir <- "/Users/rzabramoff/ownCloud/LSCE work files/data/"
+figdir <- "/Users/rzabramoff/ownCloud/LSCE work files/Documents/Millennial_Dev/"
+```
+
+#Read in LUCAS Dataset
+```{r}
+#This dataset is provided here as an Rdata file:
+load("LUCAS_read.Rdata")
+
+#Additionally, LUCAS topsoil data are accessible from: https://esdac.jrc.ec.europa.eu/content/lucas-2009-topsoil-data
+
+#SOM fractions data are accessible from: https://esdac.jrc.ec.europa.eu/content/soil-organic-matter-som-fractions
+
+#LUCAS LU categories
+#C woodland: 
+#C10 (Braodleaved woodland)
+#C20 (Coniferous woodland)
+#C30 (Mixed woodland)
+#E grassland:
+#E10 (Grassland with sparse tree/shrub cover)
+#E20 (Grassland withouth tree/shrub cover)
+#E30 (Spontaneously re-vegetated surfaces)
+```
+
+#Read in KG Dataset
+```{r}
+#This data will be accessible from Georgiou et al. (2021) and added here as an Rdata file when it is published - it is currently under review at Nature Geoscience.
+kf <- read.csv(paste0(datadir,"Kat_MAOM/Georgiou-MAOM-data.csv"))
+kf$GPS_LONG <- ifelse(kf$EW=="E", kf$Lon, -kf$Lon)
+kf$GPS_LAT <- ifelse(kf$NS=="S", -kf$Lat, kf$Lat)
+```
+
+#Read in VR Dataset
+```{r}
+#This dataset is provided here as an Rdata file
+load(paste0(datadir,"VR_read.Rdata"))
+
+#The dataset measurements are described in Viscarra Rossel and Hicks (2015) and Viscarra Rossel et al. (2019).
+
+#Some variable information:
+#vf$Rain #Rainfall in mm/yr
+#vf$Tave #Air temperature in deg C
+#vf$pHc #pH CaCl2
+#vf$Clay #Clay content in %
+#vf$NPP #NPP from BIOS2 in ton C/ha/yr
+#vf$hocd030 #all C pools (poc/hoc/roc) are in ton C/ha for the top 30 cm of soil
+#vf$BD #Bulk density in g/cm3
+
+#Convert tonC/ha/year to gC/m2/d
+vf$NPP.gC.m2.d <- vf$NPP * 100 / 365 #100 g/m2 in 1 tonC/ha, 365 d in 1 yr
+vf$pocd030.gC.m2 <- vf$pocd030 *100
+vf$hocd030.gC.m2 <- vf$hocd030 *100
+vf$rocd030.gC.m2 <- vf$rocd030 *100
+vf$socd030.gC.m2 <- vf$socd030 *100
+
+vf$GPS_LONG <- vf$x
+vf$GPS_LAT <- vf$y
+```
+
+##Map of LUCAS Data Sites
+```{r}
+makelabelsEW <- function(x) {ifelse(x < 0, parse(text=paste0(x,"^o", "*W")), ifelse(x > 0, parse(text=paste0(x,"^o", "*E")),x))}
+makelabelsNS <- function(x) {ifelse(x < 0, parse(text=paste0(x,"^o", "*S")), ifelse(x > 0, parse(text=paste0(x,"^o", "*N")),x))}
+
+xbreaks <- seq(-180,180,10)
+xlabels <- makelabelsEW(xbreaks)
+
+ybreaks <- seq(-90,90,10)
+ylabels <- makelabelsNS(ybreaks)
+
+cbPalette <- c("#000000","#E69F00", "#009E73", "#0072B2", "#CC79A7", "#D55E00", "#56B4E9", "#F0E442")
+
+wrld <- map_data("world", ylim=c(40,90), xlim=c(-10,25))
+
+gg1 <- ggplot() + 
+  geom_polygon(data = wrld, aes(x=long, y = lat, group = group), fill = NA, color = "black") + 
+  coord_fixed(1.3) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.ticks = element_blank(), legend.position="bottom",legend.title=element_text(size=15), 
+    legend.text=element_text(size=12), axis.text = element_text(size=12))+
+ scale_x_continuous("", breaks = xbreaks, labels = xlabels) +
+ scale_y_continuous("", breaks = ybreaks, labels = ylabels)
+
+barsize=10
+
+pdf(file=paste0(figdir, "Map_LUCAS.pdf"), height=4, width=7)
+gg1 + geom_point(data=sdf, aes(x=GPS_LONG, y=GPS_LAT), color="red", pch=1, size=1)
+dev.off()
+```
+
+##Map of Viscarra Rossel Data Sites
+```{r}
+wrld <- map_data("world", ylim=c(-40,-20), xlim=c(100,160))
+
+gg1 <- ggplot() + 
+  geom_polygon(data = wrld, aes(x=long, y = lat, group = group), fill = NA, color = "black") + 
+  coord_fixed(1.3) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.ticks = element_blank(), legend.position="bottom",legend.title=element_text(size=15), 
+    legend.text=element_text(size=12), axis.text = element_text(size=12))+
+ scale_x_continuous("", breaks = xbreaks, labels = xlabels) +
+ scale_y_continuous("", breaks = ybreaks, labels = ylabels)
+
+pdf(file=paste0(figdir, "Map_VR.pdf"), height=4, width=7)
+gg1 + geom_point(data=vf, aes(x=GPS_LONG, y=GPS_LAT), color="red", pch=1, size=1)
+dev.off()
+```
+
+##Map of Georgiou Data Sites
+```{r}
+xbreaks <- seq(-180,180,60)
+xlabels <- makelabelsEW(xbreaks)
+
+ybreaks <- seq(-90,90,30)
+ylabels <- makelabelsNS(ybreaks)
+
+wrld <- map_data("world")
+gg1 <- ggplot() + 
+  geom_polygon(data = wrld, aes(x=long, y = lat, group = group), fill = NA, color = "black") + 
+  coord_fixed(1.3) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.ticks = element_blank(), legend.position="bottom",legend.title=element_text(size=15), 
+    legend.text=element_text(size=12), axis.text = element_text(size=12))+
+ scale_x_continuous("", breaks = xbreaks, labels = xlabels) +
+ scale_y_continuous("", breaks = ybreaks, labels = ylabels)
+
+kfmap <- kf[kf$depth > 0.05,]
+
+pdf(file=paste0(figdir, "Map_Kat.pdf"), height=4, width=7)
+gg1 + geom_point(data=kfmap, aes(x=GPS_LONG, y=GPS_LAT), color="red", pch=1, size=1)
+dev.off()
+```
+
+##Map of All Data Sites
+```{r}
+pch.here <- 16
+size.here <- 0.5
+
+pdf(file=paste0(figdir, "FigureS_MAP.pdf"), height=4, width=7)
+gg1 + geom_point(data=vf, aes(x=GPS_LONG, y=GPS_LAT), color=cbPalette[2], pch=pch.here, size=size.here) +
+    geom_point(data=kf, aes(x=GPS_LONG, y=GPS_LAT), color=cbPalette[6], pch=pch.here, size=size.here) +
+  geom_point(data=sdf, aes(x=GPS_LONG, y=GPS_LAT), color=cbPalette[7], pch=pch.here, size=size.here)
+dev.off()
+
+pdf(file=paste0(figdir, "FigureS_MAP_legend.pdf"), height=3, width=3)
+legdf <- as.data.frame(cbind(Dataset = c("Viscarra Rossel","Georgiou","Lucas"), Dummy1 = c(1,2,3), Dummy2 = c(1,2,3) ))
+ggplot(data=legdf, aes(x=Dummy1, y=Dummy2, col=Dataset)) + geom_point() + theme_classic() +
+ scale_color_manual(values = c(cbPalette[2], cbPalette[6], cbPalette[7]), name="", labels =c("Viscarra Rossel","Georgiou","LUCAS"))
+dev.off()
+```
+
+#GLDAS
+```{r}
+#This data is availabe from NASA's Goddard Earth Sciences Data and Information Services Center: https://disc.gsfc.nasa.gov/datasets/GLDAS_NOAH10_M_2.1/summary?keywords=GLDAS
+
+setwd("/Users/rzabramoff/ownCloud/LSCE work files/Data/GLDAS/")
+grd.list <- list.files(pattern=".nc4")
+
+#Soil Temperature
+  gldas.SoilTMP0_10cm_inst <- stack(grd.list, varname="SoilTMP0_10cm_inst")
+  gldas.SoilTMP10_40cm_inst <- stack(grd.list, varname="SoilTMP10_40cm_inst")
+  gldas.SoilTMP40_100cm_inst <- stack(grd.list, varname="SoilTMP40_100cm_inst")
+  
+  #Generates a weighted average of soil temperature by depth using the trapezoidal rule and converts from Kelvins to degrees Celcius
+  gldas.SoilTMP = (0.1*gldas.SoilTMP0_10cm_inst + 0.3*gldas.SoilTMP10_40cm_inst + 0.6*gldas.SoilTMP40_100cm_inst) - 273.15
+  
+  #Datasets are large so we remove the layers we no longer need
+  rm(gldas.SoilTMP0_10cm_inst, gldas.SoilTMP10_40cm_inst, gldas.SoilTMP40_100cm_inst)
+  
+  #Average over the time intervals
+  gldas.SoilTMPAvg2000_2020 <- calc(gldas.SoilTMP, mean)
+
+#Soil Moisture
+  gldas.SoilMoi0_10cm_inst <- stack(grd.list, varname="SoilMoi0_10cm_inst")
+  gldas.SoilMoi10_40cm_inst <- stack(grd.list, varname="SoilMoi10_40cm_inst")
+  gldas.SoilMoi40_100cm_inst <- stack(grd.list, varname="SoilMoi40_100cm_inst")
+  
+  vf$depth <- rep(0.3, dim(vf)[1])
+  sdf$depth <- rep(0.2, dim(sdf)[1])
+  kf$depth <- (kf$Bottom.depth-kf$Top.depth)/100 #m
+
+  #This function averages soil moisture by depth,depending on the depth of the site, converts from kg/m2 to m3/m3, and averages across time intervals. This function also extracts the soil temperature and moisture for each site from the raster file based on reported latitude and longitude.
+  set_soiltm <- function(df){
+  map.points <- cbind(df$GPS_LONG, df$GPS_LAT)
+  df$SoilTMP_C <- raster::extract(gldas.SoilTMPAvg2000_2020, map.points)
+  
+  SoilMoi0_10cm <- raster::extract(gldas.SoilMoi0_10cm_inst, map.points)
+  SoilMoi10_40cm <- raster::extract(gldas.SoilMoi10_40cm_inst, map.points)
+  SoilMoi40_100cm <- raster::extract(gldas.SoilMoi40_100cm_inst, map.points)
+  
+  gldas.SoilMoi <- matrix(nrow=dim(df)[1], ncol=240)
+  for(i in 1:dim(df)[1]){
+    if(is.na(df$depth[i])){
+      gldas.SoilMoi[i,] <- NA
+    }else if(df$depth[i]<0.1){
+      gldas.SoilMoi[i,] <- SoilMoi0_10cm[i,]/(1000*df$depth[i])
+    }else if(df$depth[i]<0.4){
+      gldas.SoilMoi[i,] <- (0.1*SoilMoi0_10cm[i,] + (df$depth[i]-0.1)*SoilMoi10_40cm[i,]) / (df$depth[i]^2*1000)
+    }else{
+      gldas.SoilMoi[i,] <- (0.1*SoilMoi0_10cm[i,] + 0.3*SoilMoi10_40cm[i,] + (df$depth[i]-0.4)*SoilMoi40_100cm[i,]) / (df$depth[i]^2*1000)
+    }
+  }
+  
+  df$SoilMoi_m3m3 <- rowMeans(gldas.SoilMoi)
+  
+return(df)
+  }
+
+#Generate the soil moisture and temperature using the function above for each dataset
+#SoilMoi #m3/m3
+#SoilTMP #C
+vf <- set_soiltm(vf)
+sdf <- set_soiltm(sdf)
+kf <- set_soiltm(kf)
+
+#Removes large data from memory
+rm(gldas.SoilMoi0_10cm_inst, gldas.SoilMoi10_40cm_inst, gldas.SoilMoi40_100cm_inst)
+rm(gldas.SoilMoi, gldas.SoilTMP) 
+```
+
+#Spawn et al. (2020)
+```{r}
+#This data is available from the ORNL DAAC: https://daac.ornl.gov/cgi-bin/dsviewer.pl?ds_id=1763
+
+#Here I read in the above and belowground biomass carbon and calculate the fraction of C that is belowground.
+spawn.above <- raster("/Users/rzabramoff/Documents/BigData/Global_Maps_C_Density_2010_1763/data/aboveground_biomass_carbon_2010.tif") #Mg C / ha
+spawn.below <- raster("/Users/rzabramoff/Documents/BigData/Global_Maps_C_Density_2010_1763/data/belowground_biomass_carbon_2010.tif") #Mg C / ha
+frac.spawn.below <- spawn.below/(spawn.below + spawn.above)
+save(frac.spawn.below, file="spawn_proportion_belowground.Rdata")
+```
+
+#Li et al. (2019) and Xia et a. (2019)
+```{r}
+#This dataset is provided here as an Rdata file
+#This dataset estimates NPP from litterfall in gC/m2/yr
+load(paste0(datadir, "LitterNPP_Li2019.RData"))
+litt <- raster(as.matrix(litt))
+litt[litt < 0] <- NA
+extent(litt) <- c(-180,180,-90,90)
+
+litterplotsize <- 4
+
+#Determine allocation of litter to roots using the Xia et al. (2019) dataset
+##This dataset can be downloaded from the supplement of Xia et al. (2019): https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2018JG004777 
+#Note: We used Spawn et al. (2020) above to calculate the allocation to roots, but this alternative method of estimating NPP to allocated to fine roots is discussed in Section 2.6.1 of Abramoff et al. (2021) and is therefore included here.
+alloc <- read.csv(paste0(datadir,"LitterNPP_WenpingYuan/jgrg21425-sup-0001-2018jg004777-ds01.csv"))
+
+##Extracts litterfall NPP for each site using reported latitude and longitude
+map.points <- cbind(alloc$Longitude.o., alloc$Latitude.o.)
+alloc$Litterfall.gC.m2.yr <- raster::extract(litt, map.points)
+
+#Plots litterfall NPP from Li et al. 2019 against Leaf NPP from Xia et al. 2019
+pdf(file=paste0(figdir,paste0("littervNPPleaf.pdf")), height=litterplotsize, width=litterplotsize)
+plot(alloc$Litterfall.gC.m2.yr, alloc$NPPleaf.gC.m.2.yr.1., xlab="Litterfall from Li et al. 2019", ylab="Leaf NPP from Xia et al. 2019", ylim=c(0,700), xlim=c(0,700))
+abline(0,1,lty=2)
+dev.off()
+
+#Calculates percentage of NPP allocated to roots using ratio of fine roots to leaves from Xia et al. 2019
+alloc$Litterroot.gC.m2.yr = alloc$Litterfall.gC.m2.yr*(alloc$afroot/100)/(alloc$aleaf/100)
+
+#Plots estimated root NPP from Li et al. 2019 against Root NPP from Xia et al. 2019
+pdf(file=paste0(figdir,paste0("rootlittervNPProot.pdf")), height=litterplotsize, width=litterplotsize)
+plot(alloc$Litterroot.gC.m2.yr, alloc$NPProot.gC.m.2.yr.1., xlab="Estimated Root NPP from Li et al. 2019 Litterfall", ylab="Root NPP from Xia et al. 2019", ylim=c(0,700), xlim=c(0,700))
+abline(0,1,lty=2)
+dev.off()
+
+#Calculates median ratio of fine roots to leaves 
+median_afroot_aleaf <- summary(alloc$afroot.../alloc$aleaf...)[3]
+alloc$Litterroot.gC.m2.yr_medianconv <- alloc$Litterfall.gC.m2.yr*0.87613
+```
+
+#Calculate NPP
+```{r}
+#Function that calculates the total NPP using the Litterfall from Li et al. (2019) and fine root litter from Li et al. (2019) and Spawn et al. (2020)
+set_npp <- function(df){
+map.points <- cbind(df$GPS_LONG, df$GPS_LAT)
+df$Litterfall.gC.m2.yr <- raster::extract(litt, map.points)
+local_below_above <-  raster::extract(frac.spawn.below, map.points)
+df$Litterroot.gC.m2.yr <- df$Litterfall.gC.m2.yr*local_below_above
+df$NPP.gC.m2.yr <- (df$Litterfall.gC.m2.yr + df$Litterroot.gC.m2.yr)
+df$NPP.gC.m2.d <- (df$Litterfall.gC.m2.yr + df$Litterroot.gC.m2.yr)/365
+return(df)
+}
+
+#Executes the function for the LUCAS and KG Datasets
+#Note: The VR Dataset reports NPP using the BIOS2 model as described in Viscarra Rossel and Hicks (2015) and Viscarra Rossel et al. (2019).
+sdf <- set_npp(sdf)
+kf <- set_npp(kf)
+```
+##STOPPED HERE
+#SoilGrids Data
+##Settings
+```{r}
+#The pH, bulk density, and soil order datasets are available from: https://files.isric.org/soilgrids/former/2017-03-10/aggregated/
+
+depths = c(0, 5, 15, 30, 60, 100, 200)
+resolution = "1km"
+```
+
+###SoilGrids pH
+```{r}
+#Reads in data
+setwd(paste0(datadir,"SoilGrids/pH"))
+grd.list <- list.files(pattern=resolution)
+ph1 <- stack(grd.list)
+
+temp.phs = c(ph1[[1]], ph1[[2]], ph1[[3]], ph1[[4]], ph1[[5]], ph1[[6]], ph1[[7]])
+
+#Generates a weighted average using the trapezoidal rule and also converts to regular pH units
+#Note that pH is originally x10 - this is noted in the SoilGrids documentation
+start_time <- Sys.time()
+weighted.phs = ((1/depths[6]) * ( (temp.phs[[1]]+temp.phs[[2]])*(depths[2]-depths[1]) +
+(temp.phs[[2]]+temp.phs[[3]])*(depths[3]-depths[2]) +
+(temp.phs[[3]]+temp.phs[[4]])*(depths[4]-depths[3]) +
+(temp.phs[[4]]+temp.phs[[5]])*(depths[5]-depths[4]) +
+(temp.phs[[5]]+temp.phs[[6]])*(depths[6]-depths[5]) )*0.5)*0.1
+end_time <- Sys.time()
+end_time - start_time
+
+#Removes large data from memory
+rm(ph1, grd.list, temp.phs)
+```
+
+###SoilGrids Bulk Density
+```{r}
+#Read in data
+setwd(paste0(datadir,"SoilGrids/BulkDensity"))
+
+grd.list <- list.files(pattern=resolution)
+bd1 <- stack(grd.list)
+
+temp.bd = c(bd1[[1]], bd1[[2]], bd1[[3]], bd1[[4]], bd1[[5]], bd1[[6]], bd1[[7]])
+
+#Generates a weighted average using the trapezoidal rule and converts from kg/m3 to g/cm3
+start_time <- Sys.time()
+weighted.bd = ((1/depths[6]) * ( (temp.bd[[1]]+temp.bd[[2]])*(depths[2]-depths[1]) +
+(temp.bd[[2]]+temp.bd[[3]])*(depths[3]-depths[2]) +
+(temp.bd[[3]]+temp.bd[[4]])*(depths[4]-depths[3]) +
+(temp.bd[[4]]+temp.bd[[5]])*(depths[5]-depths[4]) +
+(temp.bd[[5]]+temp.bd[[6]])*(depths[6]-depths[5]) )*0.5)*0.001
+end_time <- Sys.time()
+end_time - start_time
+
+#Removes large data from memory
+rm(bd1, temp.bd, grd.list)
+```
+
+##Set Bulk Density
+```{r}
+#Function that extracts bulk density for each site depending on the reported latitude and longitude
+set_bulkd <- function(df){
+  map.points <- cbind(df$GPS_LONG, df$GPS_LAT)
+  df$BD_soilgrids <- raster::extract(weighted.bd, map.points)
+  return(df)
+}
+
+#Executes the function for the LUCAS and KG datasets
+sdf <- set_bulkd(sdf)
+kf <- set_bulkd(kf)
+```
+
+##Set pH
+```{r}
+#Function that extracts pH for each site depending on the reported latitude and longitude
+set_pH <- function(df){
+  map.points <- cbind(df$GPS_LONG, df$GPS_LAT)
+  df$pH_Soilgrids <- raster::extract(weighted.phs, map.points)
+  return(df)
+}
+
+#Executes the function for the KG dataset
+kf <- set_pH(kf)
+```
+
+##Set Soil Order
+```{r}
+#Reads in data, including legend relating raster grid to suborders, and a key relating suborders to orders
+#Not explored in Abramoff et al. (2021), but could be useful to consider how site characteristics vary by Soil Order
+soilord <- raster("/Users/rzabramoff/ownCloud/LSCE work files/Data/SoilGrids/Taxonomy/TAXOUSDA_10km_ll.tif")
+tax_key <- read.csv("/Users/rzabramoff/ownCloud/LSCE work files/Data/global_taxonomy_key.csv")
+tax.legend <- read.csv("/Users/rzabramoff/ownCloud/LSCE work files/Data/SoilGrids/Taxonomy/TAXOUSDA_legend.csv", header=F)
+names(tax.legend) <- c("Value","Suborder")
+
+#Join the data together with key and legend to create a more general map of the 12 soil orders
+tax.info <- dplyr::left_join(tax.legend, tax_key, by=c("Suborder"))
+map.soil <- as.data.frame(values(soilord))
+names(map.soil) <- c("Value")
+new.values <- dplyr::left_join(map.soil, tax.info, by=c("Value"))
+values(soilord) <- as.factor(new.values$Order)
+
+char.orders <- c("Alfisol","Andisol","Aridisol","Entisol","Gelisol","Histosol","Inceptisol","Mollisol","Oxisol","Spodosol","Ultisol","Vertisol")
+int.orders <- 1:12
+#1=Alfisol
+#2=Andisol
+#3=Aridisol
+#4=Entisol
+#5=Gelisol
+#6=Histosol
+#7=Inceptisol
+#8=Mollisol
+#9=Oxisol
+#10=Spodosol
+#11=Ultisol
+#12=Vertisol
+
+#Saves the above key relating soil order number to the name of the soil order
+so.char.key <- as.data.frame(cbind(char.orders, int.orders))
+names(so.char.key) <- c("SoilOrder.char","SoilOrder")
+so.char.key$SoilOrder <- as.integer(as.character(so.char.key$SoilOrder))
+
+#Function extracting soil order based on reported latitude and longitude
+set_soilord <- function(df){
+  map.points <- cbind(df$GPS_LONG, df$GPS_LAT)
+  df$SoilOrder <- raster::extract(soilord, map.points)
+  df <- dplyr::left_join(df, so.char.key, by="SoilOrder")
+  return(df)
+}
+
+#Executes function for VR and LUCAS datasets
+vf <- set_soilord(vf)
+sdf <- set_soilord(sdf)
+
+#Convert reported soil orders in KG dataset to integer values
+so.char.key.rev <- read.csv(paste0(datadir,"kat_soilorder_key.csv"))
+kf <- kf %>%
+  dplyr::left_join(so.char.key.rev, by="Soil.order")
+kf = kf[,!(names(kf) %in% c("SoilOrder.x","SoilOrder.y"))]
+```
+
+#Load biome classification
+```{r}
+#This dataset is available as an Rdata file, and is also availabe from and described by the World Wildlife Fund and in Oleson et al. (2001): https://www.worldwildlife.org/publications/terrestrial-ecoregions-of-the-world
+load(file = paste0(datadir, "WWF_Biome_Map.Rdata"))
+
+#Biome 1: Tropical and Subtropical Moist Broadleaf Forests
+#Biome 2: Tropical and Subtropical Dry Broadleaf Forests
+#Biome 3: Tropical and Subtropical Coniferous Forests
+#Biome 4: Temperate Broadleaf and Mixed Forests
+#Biome 5: Temperate Coniferous Forests
+#Biome 6: Boreal Forests/Taiga
+#Biome 7: Tropical and Subtropical Grasslands, Savannas, and Shrublands
+#Biome 8: Temperate Grasslands, Savannas, and Shrublands
+#Biome 9: Flooded Grasslands and Savannas
+#Biome 10: Montane Grasslands and Savannas
+#Biome 11: Tundra
+#Biome 12: Mediterranean Forests, Woodlands, and Scrub
+#Biome 13: Deserts and Xeric Shrublands
+#Biome 14: Mangroves
+
+#Create raster file with the correct shape to hold biome data using the first layer in the stack
+wwfbiomes <- biomestack[[1]]
+
+#Convert the raster to a dataframe for easier calculation
+dfbiomestack <- as.data.frame(values(biomestack))
+
+#At each location, determine which biome occupies the greatest fractional area, then assign the integer classification for each biome to that location
+biome.pos <- numeric(length=dim(dfbiomestack)[1])
+for (i in 1:dim(dfbiomestack)[1]){
+biome.pos[i] <- ifelse(all(is.na(dfbiomestack[i,])),NA,which.max(dfbiomestack[i,]))
+}
+major.biome <- colnames(dfbiomestack)[biome.pos]
+major.int <- as.integer(gsub("^.*_", "", major.biome))
+
+#Convert back to a raster format
+values(wwfbiomes) <- major.int
+
+#Function that extracts the biome classification based on the reported latitude and longitude
+set_biome <- function(df){
+  map.points <- cbind(df$GPS_LONG, df$GPS_LAT)
+  df$Biome <- raster::extract(wwfbiomes, map.points)
+  return(df)
+}
+
+#Executes function for LUCAS, KG, and VR datasets
+sdf <- set_biome(sdf)
+kf <- set_biome(kf)
+vf <- set_biome(vf)
+```
+
+#Saves Datasets with Additional Environmental Characteristics Added to the Data Frame
+```{r}
+save(vf, file="/Users/rzabramoff/ownCloud/LSCE work files/data/ViscarraRossel_write.Rdata")
+
+save(sdf, file="/Users/rzabramoff/ownCloud/LSCE work files/data/LUCAS_write.Rdata")
+
+save(kf, file="/Users/rzabramoff/ownCloud/LSCE work files/data/Georgiou_write.Rdata")
+```

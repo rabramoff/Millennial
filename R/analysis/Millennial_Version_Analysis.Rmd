@@ -1,0 +1,3874 @@
+---
+title: "Millennial_Version_Analysis"
+author: "Rose Abramoff"
+date: "Sep 9, 2021"
+output: html_document
+---
+#Load required libraries
+```{r}
+#Loads libraries
+library(FME)
+library(tidyr)
+library(RColorBrewer)
+library(ggplot2)
+library(corrplot)
+library(deSolve)
+library(lattice)
+library(raster)
+library(rsq)
+library(ppcor)
+library(caret)
+library(gbm)
+library(rtop)
+library(EnvStats)
+
+#Cleans global environment
+rm(list=ls())
+```
+
+#Switches
+```{r}
+#Dataset to use for model fitting and analysis
+  #Options: 
+  #"all" <- all datasets put together
+  #"Viscarra-Rossel" <- VR dataset
+  #"Gerogiou" <- KG dataset
+  #"LUCAS" <- LUCAS dataset
+testDat = "Viscarra-Rossel" #all #Viscarra-Rossel #Georgiou #LUCAS
+
+#Switches to execute certain portions of the code (0=do not execute, 1=execute)
+constant_inputs = 0
+do_model_run_test = 0
+do_sensitivity = 0
+do_SS_plots = 0
+do_sens_fun = 0
+do_mod_fit = 1
+do_explore_bias = 1
+do_MRT_sites = 0
+do_FME_SS_V2MMRMM = 0
+do_FME_SS_Century = 1
+
+#Fit settings
+proptrain = 1 #proportion of data to train on
+
+#MCMC settings
+niter.setting = 2000
+burninlength = 1000
+updatecov.setting = 10
+wvar0.setting = 0
+```
+
+#Load color palettes and multiplot function
+```{r}
+#Set up color palette for plotting
+cbPalette <- c("#000000","#E69F00", "#009E73", "#0072B2", "#CC79A7", "#D55E00", "#56B4E9", "#F0E442")
+
+mypal <- c("#CC79A7", "#009E73", "#0072B2", "#D55E00", "#56B4E9","#E69F00", "#F0E442","#999999")
+
+multiplot <- function(..., plotlist=NULL, file, cols=2, layout=NULL) {
+  library(grid)
+  
+  plots <- c(list(...), plotlist)
+  
+  numPlots = length(plots)
+  
+  if (is.null(layout)) {
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                     ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+  
+  if (numPlots==1) {
+    print(plots[[1]])
+    
+  } else {
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    
+    for (i in 1:numPlots) {
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+#Model names and parameter file definitions
+```{r}
+#Model and model function names
+names.models <- c("Original","V2 ECA", "V2 MM", "V2 LIN","Century")
+nmodels <- length(names.models)
+functions.models <- c("Model.V1","Model.V2.5pool.ECA","Model.V2.5pool.MMRMM","Model.V2.5pool.Lin","Model.Century")
+
+#Parameter file names
+parameter.files <- c("soilpara_in_original.txt",rep("soilpara_in_dyna.txt",nmodels-2),"soilpara_in_century_withlitter.txt")
+
+parameter.files.SS <- c("soilpara_in_original_eq.txt","soilpara_in_eq.txt","soilpara_in_century_withlitter.txt")
+```
+
+#Input data and parameters
+```{r}
+#Define input directory
+inputdir <- "/Users/rzabramoff/ownCloud/LSCE work files/Code/R_scripts/simulationv2/"
+#Define figure directory
+figdir <- "/Users/rzabramoff/ownCloud/LSCE work files/Documents/Millennial_Dev/"
+#Define data directory
+datadir <- "/Users/rzabramoff/ownCloud/LSCE work files/data/"
+#Define code directory
+codedir <- "/Users/rzabramoff/ownCloud/LSCE work files/Code/R_scripts/"
+
+#Read in default inputs
+inputdata <- read.table(paste0(inputdir,"globalaverage.txt"))
+names(inputdata) <- c("forc_st","forc_sw","forc_npp") #degC, m3/m3, gC/m2/d
+
+#If inputs are constant, prepare input data
+if(constant_inputs==1){
+inputdata$forc_st = rep(mean(inputdata$forc_st),dim(inputdata)[1])
+inputdata$forc_sw = rep(mean(inputdata$forc_sw),dim(inputdata)[1])
+inputdata$forc_npp = rep(mean(inputdata$forc_npp),dim(inputdata)[1])
+}
+
+#Read in and organize parameter files as a list of named vectors
+parameters <- NULL
+parameters.SS <- NULL
+
+for(i in 1:nmodels){
+parameters.raw <- read.table(paste0(inputdir,parameter.files[i]))
+parameters[[i]] <- as.list(parameters.raw$V2)
+names(parameters[[i]]) <- parameters.raw$V1
+}
+
+for(i in 1:3){
+parameters.raw <- read.table(paste0(inputdir,parameter.files.SS[i]))
+parameters.SS[[i]] <- as.list(parameters.raw$V2)
+names(parameters.SS[[i]]) <- parameters.raw$V1
+}
+```
+
+#Set runtime
+```{r}
+#The model runs with a daily time step
+#Defines time variables
+##Number of years to run the model
+num.years = 100 
+##Number of time steps in the model
+run.steps <- seq(1,num.years*365)
+run.steps.minus.one <- run.steps[1:length(run.steps)-1]
+
+#Time step at which to evaluate steady state (nyears*days per year)
+SStime <- 1000*365
+```
+#Set up model functions
+##Original model
+```
+The original Millennial model as represented in the code repository https://github.com/email-clm/Millennial
+```
+```{r}
+#Millennial V1 equations and comments are conserved from the original repository.
+derivs.V1 <- function(step.num,state,parameters) {
+  with(as.list(c(state,parameters)), {
+
+  # Equation 3 in Abramoff et al. (2017)
+  t_scalar <- (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 * (forc_st(step.num) - parameters$t1))) /
+    (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 *(30.0 - parameters$t1)))
+
+  w_scalar <- 1.0 / (1.0 + parameters$w1 * exp(-parameters$w2 * forc_sw(step.num)/0.35))
+
+  # Equation 8 in Abramoff et al. (2017) except Xiaofeng removed water impact after review at GBC, june 2017
+  f_LM_leaching <- LMWC * parameters$k_leaching * t_scalar #* w_scalar ! Xiaofeng removed water impact, after review at GBC June,2017         
+
+  # if (MAOM > parameters$M_Lmin) {
+  #   f_MI_LM_des <- parameters$Vm_l * (MAOM - parameters$M_Lmin) / (parameters$km_l + MAOM - parameters$M_Lmin) * t_scalar * w_scalar
+  # } else {
+  #   f_MI_LM_des <- 0
+  # }
+  
+  # LMWC -> MINERAL: This desorption function is from Mayes 2012, SSAJ
+  klmc_min <- (10.0 ^ (-0.186 * 7 - 0.216)) / 24.0
+
+  # Equation 11 in Abramoff et al. (2017)
+  # "Qmax is the maximum sorption capacity (mg C kg-1 dry soil) and is converted to
+  # C density (g C m-2) by multiplying soil bulk density (BD = 1350 kg m-3), assuming
+  # a 1 m soil profile. The parameters c1 and c2 are the coefficients for computing
+  # Qmax from the clay content in percent, derived from Mayes et al. (2012)."
+  # 2019-03-09 note: per Xiaofeng Xu, they ended up using 1.0 for bulk density
+  Qmax <- 10.0 ^ (parameters$c1 * log(0.4 * 100.0) + parameters$c2 - 0.50)
+
+  f_LM_MI_sor <- (((klmc_min * Qmax * LMWC ) / (2 + klmc_min * LMWC) - MAOM) / Qmax + 0.0015) * LMWC / 50 * t_scalar * w_scalar
+
+  if (f_LM_MI_sor < (LMWC * 0.9)) {
+    f_LM_MI_sor <- f_LM_MI_sor
+  } else {
+    f_LM_MI_sor <- LMWC * 0.9
+  }
+
+  f_LM_MB_uptake <- LMWC * parameters$klmc * t_scalar * w_scalar * MIC / (MIC + parameters$kes) * LMWC / (20 + LMWC)
+  temp2 = f_LM_MB_uptake * (1 - (parameters$CUEref - parameters$CUET * (forc_st(step.num) - parameters$Taeref)))
+temp2 <- max(temp2, 0)
+f_LM_MB_uptake = f_LM_MB_uptake - temp2
+
+  # POM -> LMWC
+  # "Decomposition of POM is governed by a double Michaelis–Menten equation,
+  # where Vpl is the maximum rate of POM decomposition, Kpl is the half-
+  # saturation constant, B is the microbial biomass carbon, and Kpe is the
+  # half-saturation constant of microbial control on POM mineralization.
+  # Equation 2 in Abramoff et al. (2017)
+  f_PO_LM_dep <- parameters$Vpom_lmc * POM / (POM + parameters$kpom) * t_scalar * w_scalar #* (1. - MB / (MB + k_POMes))
+
+  f_PO_LM_dep <- min(f_PO_LM_dep,  0.9 * POM)
+  
+  if (MIC > 0 & MAOM < Qmax) {
+    f_MB_MI_sor <- MIC * parameters$kmic * 0.15 * t_scalar * w_scalar  #* (MB / 200) * (MB / 200)
+  } else {
+    f_MB_MI_sor <- 0
+  }
+
+  f_MB_MI_sor <- min(f_MB_MI_sor, 0.9 * MIC)
+  
+  f_MB_MI_sor <- max(f_MB_MI_sor, 0)
+
+  f_MB_atm <- temp2 + MIC * parameters$kmic * t_scalar * w_scalar
+
+  # POM -> SOILAGG
+  # "The formation of aggregate C (A) from POM follows Michaelis–Menten dynamics,
+  # where Vpa is the maximum rate of aggregate formation, Kpa is the half-
+  # saturation constant of aggregate formation, and Amax is the maximum capacity
+  # of C in soil aggregates.
+  # Eauation 5 in Abramoff et al. (2017)
+  f_PO_SO_agg <- parameters$Vpom_agg * POM / (parameters$kpom_agg + POM) * (1 - AGG / parameters$AGGmax) * t_scalar * w_scalar
+
+  f_PO_SO_agg <- min(f_PO_SO_agg, 0.9 * POM)
+
+  f_MI_SO_agg <- parameters$Vmin_agg * MAOM / (parameters$kmin_agg + MAOM) * (1 - AGG / parameters$AGGmax) #* t_scalar * w_scalar
+ 
+  f_MI_SO_agg <- min(f_MI_SO_agg, 0.9 * MAOM)
+
+  # Soil aggregate C breakdown is partitioned to POM and MAOM,
+  # where kb is the rate of breakdown.
+  # Eauation 6 in Abramoff et al. (2017)
+  f_SO_break <- AGG * parameters$kagg * t_scalar * w_scalar
+  f_SO_PO_break <- f_SO_break * 1.5 / 3
+  f_SO_MI_break <- f_SO_break * 1.5 / 3
+
+  if((f_PO_LM_dep + f_PO_SO_agg) > POM) {
+    temp3 <- POM / (f_PO_LM_dep + f_PO_SO_agg)
+    f_PO_LM_dep <- f_PO_LM_dep * temp3
+    f_PO_SO_agg <- f_PO_SO_agg * temp3
+  }
+  
+# Update state variables
+  # Equation 7 in Abramoff et al. (2017)
+  dLMWC <- (f_PO_LM_dep - f_LM_leaching - f_LM_MI_sor - f_LM_MB_uptake - temp2) + forc_npp(step.num) / 3
+
+  # Equation 1 in Abramoff et al. (2017)
+  dPOM <- (f_SO_PO_break - f_PO_LM_dep - f_PO_SO_agg) + forc_npp(step.num) * 2 / 3
+
+  dMIC <- (f_LM_MB_uptake - f_MB_MI_sor - f_MB_atm)
+
+  dMAOM <- (f_LM_MI_sor + f_MB_MI_sor + f_SO_MI_break - f_MI_SO_agg)
+
+  dAGG <- (f_PO_SO_agg + f_MI_SO_agg - f_SO_PO_break - f_SO_MI_break)
+
+    return(list(c(dPOM, dLMWC, dAGG, dMIC, dMAOM)))
+  })
+}
+
+#Define initial states
+    state <- c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1)
+#Define steaty state input functions
+    forc_st <- approxfun(1:SStime, rep(mean(inputdata$forc_st),SStime))
+    forc_sw <- approxfun(1:SStime, rep(mean(inputdata$forc_sw),SStime))
+    forc_npp <- approxfun(1:SStime, rep(mean(inputdata$forc_npp),SStime))
+
+#Solve for steady state
+SS.V1 <- stode(y = state, time = SStime, func = derivs.V1, parms = parameters[[1]], positive=TRUE)
+
+#Output steady state, and define new initial states
+    state.V1 = SS.V1$y
+    state.V1 = c(POM = 88.22511, LMWC = 27.33889, AGG = 412.6834, MIC = 34.21746, MAOM = 3030.505)
+    
+#Calculate the eigenvalues
+    eigens <- eigen(jacobian.full(y=state.V1, func=derivs.V1, parms=parameters[[1]], time=1))
+    
+#Define dynamic input functions
+    forc_st <- approxfun(run.steps, rep(inputdata$forc_st,num.years)) 
+    forc_sw <- approxfun(run.steps, rep(inputdata$forc_sw,num.years))
+    forc_npp <- approxfun(run.steps,rep(inputdata$forc_npp,num.years))
+    
+#Function that runs the model dynamically by solving the ODEs using a 4th order Runge-Kutta and returns the output as a data frame of model pool values for each time step
+Model.V1 <- function (parameters, times=run.steps) {
+    output <- ode(y = state.V1, times=run.steps, func=derivs.V1, parms = parameters, method="rk4")
+      return(as.data.frame(cbind(time = output[run.steps.minus.one,"time"], POM = output[run.steps.minus.one,"POM"], LMWC = output[run.steps.minus.one,"LMWC"], AGG = output[run.steps.minus.one,"AGG"], MIC = output[run.steps.minus.one,"MIC"], MAOM = output[run.steps.minus.one,"MAOM"])))
+}
+```
+
+##V2 ECA kinetcs
+```{r}
+#Equations for Millennial V2 with ECA kinetics
+derivs.V2.5pool.ECA <- function(step.num,state,parameters) {
+  with(as.list(c(state,parameters)), {
+          
+# Soil type properties  
+  #Equation 10
+  kaff_lm = exp(-parameters$param_p1 * 7 - parameters$param_p2) * parameters$kaff_des
+
+  #Equation 11
+  param_qmax = 1 * 1000 * 0.86 * 80   
+              
+# Hydrological properties
+
+ #Equation 4
+ scalar_wd = (forc_sw(step.num) / parameters$porosity)^0.5
+
+ #Equation 15
+ scalar_wb = exp(parameters$lambda * -parameters$matpot) * (parameters$kamin + (1 - parameters$kamin) * ((parameters$porosity - forc_sw(step.num)) / parameters$porosity)^0.5) * scalar_wd
+
+# Decomposition
+
+  gas_const <- 8.31446
+   
+  #Equation 3
+    vmax_pl = parameters$alpha_pl * exp(-parameters$eact_pl / (gas_const * (forc_st(step.num) + 273.15)))
+    
+  #Equation 2a
+    # POM -> LMWC
+    if(POM>0 && MIC>0){
+      f_PO_LM = vmax_pl * scalar_wd * POM * MIC / (parameters$kaff_pl + POM + MIC)
+    }else{
+      f_PO_LM=0
+    }
+    
+  #Equation 5
+    # POM -> AGG
+    if(POM>0){
+      f_PO_AG = parameters$rate_pa * scalar_wd * POM
+    }else{
+      f_PO_AG=0
+    }
+    
+  #Equation 6
+    # AGG -> MAOM + POM
+    if(AGG>0){
+      f_AG_break = parameters$rate_break * scalar_wd * AGG
+    }else{
+      f_AG_break=0
+    }
+  
+  #Equation 8
+    # LMWC -> out of system leaching
+    if(LMWC>0){
+      f_LM_leach = parameters$rate_leach * scalar_wd * LMWC
+    }else{
+      f_LM_leach=0
+    }
+  
+  #Equation 9
+    # LMWC -> MAOM
+    if(LMWC>0 && MAOM>0){
+      f_LM_MA = scalar_wd * kaff_lm * LMWC * (1 - MAOM / param_qmax)
+    }else{
+      f_LM_MA=0
+    }
+  
+  #Equation 12
+    # MAOM -> LMWC
+    if(MAOM>0){
+      f_MA_LM = parameters$kaff_des * MAOM / param_qmax
+    }else{
+      f_MA_LM=0
+    }
+    
+  #Equation 14
+    vmax_lb = parameters$alpha_lb * exp(-parameters$eact_lb / (gas_const * (forc_st(step.num) + 273.15)))
+  
+  #Equation 13a
+    # LMWC -> MIC
+    if(LMWC>0 && MIC>0){
+      f_LM_MB = vmax_lb * scalar_wb * MIC * LMWC / (parameters$kaff_lb + MIC + LMWC)
+    }else{
+      f_LM_MB=0
+    }
+  
+  #Equation 16
+    # MIC -> MAOM + LMWC
+    if(MIC>0){
+      f_MB_turn = parameters$rate_bd * MIC^2.0
+    }else{
+      f_MB_turn=0
+    }
+    
+  #Equation 18
+    # MAOM -> AGG
+    if(MAOM>0){  
+      f_MA_AG = parameters$rate_ma * scalar_wd * MAOM
+    }else{
+      f_MA_AG=0
+    }
+  
+  #Equation 22
+    # microbial growth flux, but is not used in mass balance
+
+  #Equation 21
+    # MIC -> atmosphere
+    if(MIC>0 && LMWC>0){ 
+    f_MB_atm = f_LM_MB * (1 - (parameters$cue_ref - parameters$cue_t * (forc_st(step.num) - parameters$tae_ref) ) )
+    }else{
+      f_MB_atm=0
+    }
+    
+# Update state variables
+    
+  #Equation 1
+    dPOM = forc_npp(step.num) * parameters$param_pi + f_AG_break * parameters$param_pa - f_PO_AG - f_PO_LM
+  
+  #Equation 7
+    dLMWC = forc_npp(step.num) * (1. - parameters$param_pi) - f_LM_leach + f_PO_LM - f_LM_MA - f_LM_MB + f_MB_turn * (1. - parameters$param_pb) + f_MA_LM
+  
+  #Equation 17
+    dAGG = f_MA_AG + f_PO_AG - f_AG_break
+  
+  #Equation 20
+    dMIC = f_LM_MB - f_MB_turn - f_MB_atm  
+  
+  #Equation 19
+    dMAOM = f_LM_MA - f_MA_LM + f_MB_turn * parameters$param_pb - f_MA_AG + f_AG_break * (1. - parameters$param_pa)
+
+      return(list(c(dPOM, dLMWC, dAGG, dMIC, dMAOM)))
+  })
+}
+
+#Define initial states
+    state <- c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1)
+    
+#Define steady state input functions
+    forc_st <- approxfun(1:SStime, rep(mean(inputdata$forc_st),SStime))
+    forc_sw <- approxfun(1:SStime, rep(mean(inputdata$forc_sw),SStime))
+    forc_npp <- approxfun(1:SStime, rep(mean(inputdata$forc_npp),SStime))
+
+#Solve for steady state
+SS.V2.5pool.ECA <- stode(y = state, time = SStime, func = derivs.V2.5pool.ECA, parms = parameters[[2]], positive=TRUE)
+
+#Calculate the eigenvalues
+eigens <- eigen(jacobian.full(y=SS.V2.5pool.ECA$y, func=derivs.V2.5pool.ECA, parms=parameters[[2]], time=1))
+
+#Define new initial states
+    state.V2.5pool.ECA = SS.V2.5pool.ECA$y
+    
+#Define dynamic input functions
+    forc_st <- approxfun(run.steps, rep(inputdata$forc_st,num.years))
+    forc_sw <- approxfun(run.steps, rep(inputdata$forc_sw,num.years))
+    forc_npp <- approxfun(run.steps,rep(inputdata$forc_npp,num.years))
+    
+#Function that runs the model dynamically by solving the ODEs using a 4th order Runge-Kutta and returns the output as a data frame of model pool values for each time step
+Model.V2.5pool.ECA <- function (parameters, times=run.steps) {
+    output <- ode(y = state.V2.5pool.ECA, times=run.steps, func=derivs.V2.5pool.ECA, parms = parameters, method="rk4")
+      return(as.data.frame(cbind(time = output[run.steps.minus.one,"time"], POM = output[run.steps.minus.one,"POM"], LMWC = output[run.steps.minus.one,"LMWC"], AGG = output[run.steps.minus.one,"AGG"], MIC = output[run.steps.minus.one,"MIC"], MAOM = output[run.steps.minus.one,"MAOM"])))
+}
+```
+
+##V2 RMM/MM kinetics
+```{r}
+#Equations for Millennial V2 with Reverse and Forward Michaelis Menten kinetics
+derivs.V2.5pool.MMRMM <- function(step.num,state,parameters) {
+  with(as.list(c(state,parameters)), {
+          
+# Soil type properties  
+  #Equation 10
+  kaff_lm = exp(-parameters$param_p1 * 7 - parameters$param_p2) * parameters$kaff_des
+
+  #Equation 11
+  param_qmax = 1 * 1000 * 0.86 * 80   
+              
+# Hydrological properties
+
+  #Equation 4
+  scalar_wd = (forc_sw(step.num) / parameters$porosity)^0.5
+
+  #Equation 15
+  scalar_wb = exp(parameters$lambda * -parameters$matpot) * (parameters$kamin + (1 - parameters$kamin) * ((parameters$porosity - forc_sw(step.num)) / parameters$porosity)^0.5) * scalar_wd
+
+# Decomposition
+
+  gas_const <- 8.31446
+   
+  #Equation 3
+    vmax_pl = parameters$alpha_pl * exp(-parameters$eact_pl / (gas_const * (forc_st(step.num) + 273.15)))
+    
+  #Equation 2
+    # POM -> LMWC
+    if(POM>0 && MIC>0){
+      f_PO_LM = vmax_pl * scalar_wd * POM * MIC / (parameters$kaff_pl + MIC)
+    }else{
+      f_PO_LM=0
+    }
+    
+  #Equation 5
+    # POM -> AGG
+    if(POM>0){
+      f_PO_AG = parameters$rate_pa * scalar_wd * POM
+    }else{
+      f_PO_AG=0
+    }
+    
+  #Equation 6
+    # AGG -> MAOM + POM
+    if(AGG>0){
+      f_AG_break = parameters$rate_break * scalar_wd * AGG
+    }else{
+      f_AG_break=0
+    }
+  
+  #Equation 8
+    # LMWC -> out of system leaching
+    if(LMWC>0){
+      f_LM_leach = parameters$rate_leach * scalar_wd * LMWC
+    }else{
+      f_LM_leach=0
+    }
+  
+  #Equation 9
+    # LMWC -> MAOM
+    if(LMWC>0 && MAOM>0){
+      f_LM_MA = scalar_wd * kaff_lm * LMWC * (1 - MAOM / param_qmax)
+    }else{
+      f_LM_MA=0
+    }
+  
+  #Equation 12
+    # MAOM -> LMWC
+    if(MAOM>0){
+      f_MA_LM = parameters$kaff_des * MAOM / param_qmax
+    }else{
+      f_MA_LM=0
+    }
+    
+  #Equation 4
+    vmax_lb = parameters$alpha_lb * exp(-parameters$eact_lb / (gas_const * (forc_st(step.num) + 273.15)))
+  
+  #Equation 13
+    # LMWC -> MIC
+    if(LMWC>0 && MIC>0){
+      f_LM_MB = vmax_lb * scalar_wb * MIC * LMWC / (parameters$kaff_lb + LMWC)
+    }else{
+      f_LM_MB=0
+    }
+  
+  #Equation 16
+    # MIC -> MAOM + LMWC
+    if(MIC>0){
+      f_MB_turn = parameters$rate_bd * MIC^2.0
+    }else{
+      f_MB_turn=0
+    }
+    
+  #Equation 18
+    # MAOM -> AGG
+    if(MAOM>0){  
+      f_MA_AG = parameters$rate_ma * scalar_wd * MAOM
+    }else{
+      f_MA_AG=0
+    }
+  
+    #Equation 22
+    # microbial growth flux, but is not used in mass balance
+
+  #Equation 21
+    # MIC -> atmosphere
+    if(MIC>0 && LMWC>0){ 
+    f_MB_atm = f_LM_MB * (1 - (parameters$cue_ref - parameters$cue_t * (forc_st(step.num) - parameters$tae_ref) ) )
+    }else{
+      f_MB_atm=0
+    }
+    
+# Update state variables
+    
+  #Equation 1
+    dPOM = forc_npp(step.num) * parameters$param_pi + f_AG_break * parameters$param_pa - f_PO_AG - f_PO_LM
+  
+  #Equation 7
+    dLMWC = forc_npp(step.num) * (1. - parameters$param_pi) - f_LM_leach + f_PO_LM - f_LM_MA - f_LM_MB + f_MB_turn * (1. - parameters$param_pb) + f_MA_LM
+  
+  #Equation 17
+    dAGG = f_MA_AG + f_PO_AG - f_AG_break
+  
+  #Equation 20
+    dMIC = f_LM_MB - f_MB_turn - f_MB_atm
+
+  #Equation 19
+    dMAOM = f_LM_MA - f_MA_LM + f_MB_turn * parameters$param_pb - f_MA_AG + f_AG_break * (1. - parameters$param_pa)
+
+      return(list(c(dPOM, dLMWC, dAGG, dMIC, dMAOM)))
+  })
+}
+
+#Define initial states
+    state <- c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1)
+
+#Define steady state input functions
+    forc_st <- approxfun(1:SStime, rep(mean(inputdata$forc_st),SStime))
+    forc_sw <- approxfun(1:SStime, rep(mean(inputdata$forc_sw),SStime))
+    forc_npp <- approxfun(1:SStime, rep(mean(inputdata$forc_npp),SStime))
+
+#Solve for steady state
+SS.V2.5pool.MMRMM <- stode(y = state, time = SStime, func = derivs.V2.5pool.MMRMM, parms = parameters[[3]], positive=TRUE)
+
+#Calculate the eigenvalues
+eigens <- eigen(jacobian.full(y=SS.V2.5pool.MMRMM$y, func=derivs.V2.5pool.MMRMM, parms=parameters[[3]], time=1))
+
+#Define new initial states
+    state.V2.5pool.MMRMM = SS.V2.5pool.MMRMM$y
+    
+#Define dynamic input functions
+    forc_st <- approxfun(run.steps, rep(inputdata$forc_st,num.years)) 
+    forc_sw <- approxfun(run.steps, rep(inputdata$forc_sw,num.years))
+    forc_npp <- approxfun(run.steps,rep(inputdata$forc_npp,num.years))
+
+#Function that runs the model dynamically by solving the ODEs using a 4th order Runge-Kutta and returns the output as a data frame of model pool values for each time step
+Model.V2.5pool.MMRMM <- function (parameters, times=run.steps) {
+    output <- ode(y = state.V2.5pool.MMRMM, times=run.steps, func=derivs.V2.5pool.MMRMM, parms = parameters, method="rk4")
+      return(as.data.frame(cbind(time = output[run.steps.minus.one,"time"], POM = output[run.steps.minus.one,"POM"], LMWC = output[run.steps.minus.one,"LMWC"], AGG = output[run.steps.minus.one,"AGG"], MIC = output[run.steps.minus.one,"MIC"], MAOM = output[run.steps.minus.one,"MAOM"])))
+}
+```
+
+##V2 Linear kinetics
+```{r}
+#Equations for Millennial V2 with Linear kinetics
+derivs.V2.5pool.Lin <- function(step.num,state,parameters) {
+  with(as.list(c(state,parameters)), {
+          
+# Soil type properties  
+  #Equation 10
+  kaff_lm = exp(-parameters$param_p1 * 7 - parameters$param_p2) * parameters$kaff_des
+
+  #Equation 11
+  param_qmax = 1 * 1000 * 0.86 * 80   
+              
+# Hydrological properties
+
+  #Equation 4
+  scalar_wd = (forc_sw(step.num) / parameters$porosity)^0.5
+
+  #Equation 15
+  scalar_wb = exp(parameters$lambda * -parameters$matpot) * (parameters$kamin + (1 - parameters$kamin) * ((parameters$porosity - forc_sw(step.num)) / parameters$porosity)^0.5) * scalar_wd
+
+# Decomposition
+
+  gas_const <- 8.31446
+   
+  #Equation 3
+    vmax_pl = parameters$alpha_pl * exp(-parameters$eact_pl / (gas_const * (forc_st(step.num) + 273.15)))
+    
+  #Equation 2b
+    # POM -> LMWC
+    if(POM>0 && MIC>0){
+      f_PO_LM = vmax_pl * scalar_wd * POM * MIC / parameters$kaff_pl
+    }else{
+      f_PO_LM=0
+    }
+    
+  #Equation 5
+    # POM -> AGG
+    if(POM>0){
+      f_PO_AG = parameters$rate_pa * scalar_wd * POM
+    }else{
+      f_PO_AG=0
+    }
+    
+  #Equation 6
+    # AGG -> MAOM + POM
+    if(AGG>0){
+      f_AG_break = parameters$rate_break * scalar_wd * AGG
+    }else{
+      f_AG_break=0
+    }
+  
+  #Equation 8
+    # LMWC -> out of system leaching
+    if(LMWC>0){
+      f_LM_leach = parameters$rate_leach * scalar_wd * LMWC
+    }else{
+      f_LM_leach=0
+    }
+  
+  #Equation 9
+    # LMWC -> MAOM
+    if(LMWC>0 && MAOM>0){
+      f_LM_MA = scalar_wd * kaff_lm * LMWC * (1 - MAOM / param_qmax)
+    }else{
+      f_LM_MA=0
+    }
+  
+  #Equation 12
+    # MAOM -> LMWC
+    if(MAOM>0){
+      f_MA_LM = parameters$kaff_des * MAOM / param_qmax
+    }else{
+      f_MA_LM=0
+    }
+    
+  #Equation 14
+    vmax_lb = parameters$alpha_lb * exp(-parameters$eact_lb / (gas_const * (forc_st(step.num) + 273.15)))
+  
+  #Equation 13b
+    # LMWC -> MIC
+    if(LMWC>0 && MIC>0){
+      f_LM_MB = vmax_lb * scalar_wb * MIC * LMWC / parameters$kaff_lb
+    }else{
+      f_LM_MB=0
+    }
+  
+  #Equation 16
+    # MIC -> MAOM + LMWC
+    if(MIC>0){
+      f_MB_turn = parameters$rate_bd * MIC^2.0
+    }else{
+      f_MB_turn=0
+    }
+    
+  #Equation 18
+    # MAOM -> AGG
+    if(MAOM>0){  
+      f_MA_AG = parameters$rate_ma * scalar_wd * MAOM
+    }else{
+      f_MA_AG=0
+    }
+  
+  #Equation 22
+    # microbial growth flux, but is not used in mass balance
+
+  #Equation 21
+    # MIC -> atmosphere
+    if(MIC>0 && LMWC>0){ 
+    f_MB_atm = f_LM_MB * (1 - (parameters$cue_ref - parameters$cue_t * (forc_st(step.num) - parameters$tae_ref) ) )
+    }else{
+      f_MB_atm=0
+    }
+    
+# Update state variables
+    
+  #Equation 1
+    dPOM = forc_npp(step.num) * parameters$param_pi + f_AG_break * parameters$param_pa - f_PO_AG - f_PO_LM
+  
+  #Equation 7
+    dLMWC = forc_npp(step.num) * (1. - parameters$param_pi) - f_LM_leach + f_PO_LM - f_LM_MA - f_LM_MB + f_MB_turn * (1. - parameters$param_pb) + f_MA_LM
+  
+  #Equation 17
+    dAGG = f_MA_AG + f_PO_AG - f_AG_break
+
+  #Equation 20
+    dMIC = f_LM_MB - f_MB_turn - f_MB_atm
+    
+  #Equation 19
+    dMAOM = f_LM_MA - f_MA_LM + f_MB_turn * parameters$param_pb - f_MA_AG + f_AG_break * (1. - parameters$param_pa)
+    
+      return(list(c(dPOM, dLMWC, dAGG, dMIC, dMAOM)))
+  })
+}
+
+#Define initial states
+    state <- c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1)
+    
+#Define steady state input functions
+    forc_st <- approxfun(1:SStime, rep(mean(inputdata$forc_st),SStime))
+    forc_sw <- approxfun(1:SStime, rep(mean(inputdata$forc_sw),SStime))
+    forc_npp <- approxfun(1:SStime, rep(mean(inputdata$forc_npp),SStime))
+
+#Solve for steady state
+SS.V2.5pool.Lin <- stode(y = state, time = SStime, func = derivs.V2.5pool.Lin, parms = parameters[[4]], positive=TRUE)
+
+#Calculate the eigenvalues
+eigens <- eigen(jacobian.full(y=SS.V2.5pool.Lin$y, func=derivs.V2.5pool.Lin, parms=parameters[[4]], time=1))
+
+#Define new initial states
+    state.V2.5pool.Lin = SS.V2.5pool.Lin$y
+    
+#Define dynamic input functions
+    forc_st <- approxfun(run.steps, rep(inputdata$forc_st,num.years))
+    forc_sw <- approxfun(run.steps, rep(inputdata$forc_sw,num.years))
+    forc_npp <- approxfun(run.steps,rep(inputdata$forc_npp,num.years))
+
+#Function that runs the model dynamically by solving the ODEs using a 4th order Runge-Kutta and returns the output as a data frame of model pool values for each time step
+Model.V2.5pool.Lin <- function (parameters, times=run.steps) {
+    output <- ode(y = state.V2.5pool.Lin, times=run.steps, func=derivs.V2.5pool.Lin, parms = parameters, method="rk4")
+      return(as.data.frame(cbind(time = output[run.steps.minus.one,"time"], POM = output[run.steps.minus.one,"POM"], LMWC = output[run.steps.minus.one,"LMWC"], AGG = output[run.steps.minus.one,"AGG"], MIC = output[run.steps.minus.one,"MIC"], MAOM = output[run.steps.minus.one,"MAOM"])))
+}
+```
+
+##Century
+```{r}
+#Equations for the Century model
+derivs.Century <- function(step.num,state,parameters) {
+  with(as.list(c(state,parameters)), {
+
+#Equation B1
+  t_scalar <- (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 * (forc_st(step.num) - parameters$t1))) /
+    (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 *(30.0 - parameters$t1)))
+
+#Equation B2
+  w_scalar <- 1.0 / (1.0 + parameters$w1 * exp(-parameters$w2 * forc_sw(step.num)/0.39))
+
+#Equation B3
+  f_TEX = parameters$c1 - parameters$c2*0.8
+
+#Equation B4
+  f_StrLitter = StrLitter * parameters$k_strlitter * t_scalar * w_scalar * exp(-3*parameters$LigFrac)
+  
+#Equation B5
+  f_MetLitter = MetLitter * parameters$k_metlitter * t_scalar * w_scalar  
+  
+#Equation B6
+  f_ACTIVE <- ACTIVE * parameters$k_active * t_scalar * w_scalar * f_TEX
+    
+#Equation B7
+  f_SLOW <- SLOW * parameters$k_slow * t_scalar * w_scalar
+  
+#Equation B8
+  f_PASSIVE <- PASSIVE * parameters$k_passive * t_scalar * w_scalar
+  
+#Equation B9
+  dStrLitter = parameters$input_to_strlitter * forc_npp(step.num) - f_StrLitter
+  
+#Equation B10
+  dMetLitter = (1-parameters$input_to_strlitter) * forc_npp(step.num) - f_MetLitter
+  
+#Equation B11
+  dACTIVE <- (1-parameters$LigFrac) * parameters$strlitter_to_active * f_StrLitter + parameters$metlitter_to_active * f_MetLitter  + f_SLOW * parameters$slow_to_active + f_PASSIVE * parameters$passive_to_active - f_ACTIVE
+
+#Equation B12
+  dSLOW <-  parameters$LigFrac * parameters$strlitter_to_slow * f_StrLitter + f_ACTIVE * (1-f_TEX-parameters$active_to_passive) - f_SLOW
+
+#Equation B13
+  dPASSIVE <- f_ACTIVE * parameters$active_to_passive + f_SLOW * parameters$slow_to_passive - f_PASSIVE
+            
+    return(list(c(dStrLitter, dMetLitter, dACTIVE, dSLOW, dPASSIVE)))
+  })
+}
+
+#Define initial states
+    state <- c(StrLitter=1, MetLitter=1, ACTIVE=1, SLOW=1, PASSIVE=1)
+
+#Define steady state input functions
+    forc_st <- approxfun(1:SStime, rep(mean(inputdata$forc_st),SStime))
+    forc_sw <- approxfun(1:SStime, rep(mean(inputdata$forc_sw),SStime))
+    forc_npp <- approxfun(1:SStime, rep(mean(inputdata$forc_npp),SStime))
+
+#Solve for steady state
+SS.Century <- stode(y = state, time = SStime, func = derivs.Century, parms = parameters[[5]], positive=TRUE)
+
+#Calculate the eigenvalues
+eigens <- eigen(jacobian.full(y=SS.Century$y, func=derivs.Century, parms=parameters[[5]], time=1))
+
+#Define new initial states
+state.Century = SS.Century$y
+
+#Define dynamic input functions
+    forc_st <- approxfun(run.steps, rep(inputdata$forc_st,num.years))
+    forc_sw <- approxfun(run.steps, rep(inputdata$forc_sw,num.years))
+    forc_npp <- approxfun(run.steps,rep(inputdata$forc_npp,num.years))
+    
+#Function that runs the model dynamically by solving the ODEs using a 4th order Runge-Kutta and returns the output as a data frame of model pool values for each time step
+Model.Century <- function (parameters, times=run.steps) {
+    output <- ode(y = state.Century, times=run.steps, func=derivs.Century, parms = parameters, method="rk4")
+      return(as.data.frame(cbind(time = output[run.steps.minus.one,"time"], StrLitter = output[run.steps.minus.one,"StrLitter"], MetLitter = output[run.steps.minus.one,"MetLitter"], ACTIVE = output[run.steps.minus.one,"ACTIVE"], SLOW = output[run.steps.minus.one,"SLOW"], PASSIVE = output[run.steps.minus.one,"PASSIVE"])))
+}
+```
+
+#Run all models
+```{r}
+if(do_model_run_test==1){
+#Run models in a loop with their respective default parameters
+
+#Initalize output list of matrices
+out <- NULL
+#Initialize vector of parameters
+parameters.in <- vector(mode = "list", length = nmodels)
+
+#Set parameters and run each model
+for(i in 1:nmodels){
+  parameters.in[[i]][[1]] <- parameters[[i]]
+  names(parameters.in[[i]]) <- c("parameters")
+  out[[i]] <- as.data.frame(do.call(functions.models[i], parameters.in[[i]]))
+}
+
+#Save output
+save(out, file="Millennial_Version_Analysis_output.Rdata")
+
+#Plot all models on same plot
+xax <- seq(from=0,to=10, length.out=length(run.steps.minus.one))
+ymax <- matrix(nrow=nmodels, ncol=dim(out[[3]])[2])
+socmax <- NULL
+for (i in 1:(nmodels-1)){
+ymax[i,] <- apply(out[[i]],2,max)
+socmax[i] <- max(rowSums(out[[i]][,-c(1)]))
+}
+ymax <- apply(ymax, 2, max, na.rm=T)[-1] + apply(ymax, 2, max, na.rm=T)[-1]*0.1
+ymax[6] <- max(socmax)
+
+plot1 <- function(){
+par(mfrow = c(2,3))
+par(mar = c(3.5,3.7,2,0)+.9)
+par(oma = c(0,0,0,0))
+sp=0.5
+sa=1.25
+plot(xax, out[[1]]$POM, col = cbPalette[1], cex = sp, type="l", lty = 1, cex.axis = sa, ylab=expression("Pools (gC" ~ m^{-2} ~ ")"), xlab="Years", main="POM", cex.lab = sa, ylim=c(0,ymax[1])) 
+mtext("a)", side = 3, line = 1, adj = -0.25, font = 2, cex=1.25)
+lines(xax, out[[2]]$POM, col= cbPalette[2], type="o", cex = sp)
+lines(xax, out[[3]]$POM, col= cbPalette[3], type="o", cex = sp)
+lines(xax, out[[4]]$POM, col= cbPalette[4], type="o", cex = sp)
+
+plot(xax, out[[1]]$LMWC, col = cbPalette[1], cex = sp, type="l", lty = 1, cex.axis = sa, pch = 16, ylab=expression("Pools (gC" ~ cm^{-2} ~ ")"), xlab="Years", main="LMWC", cex.lab = sa, ylim=c(0,ymax[2])) 
+mtext("b)", side = 3, line = 1, adj = -0.25, font = 2, cex=1.25)
+lines(xax, out[[2]]$LMWC, col= cbPalette[2], type="o", cex = sp)
+lines(xax, out[[3]]$LMWC, col= cbPalette[3], type="o", cex = sp)
+lines(xax, out[[4]]$LMWC, col= cbPalette[4], type="o", cex = sp)
+
+plot(xax, out[[1]]$AGG, col = cbPalette[1], cex = sp, type="l", lty = 1, cex.axis = sa, pch = 16, ylab=expression("Pools (gC" ~ m^{-2} ~ ")"), xlab="Years", main="AGG", cex.lab = sa, ylim=c(0,ymax[3])) 
+mtext("d)", side = 3, line = 1, adj = -0.25, font = 2, cex=1.25)
+lines(xax, out[[2]]$AGG, col= cbPalette[2], type="o", cex = sp)
+lines(xax, out[[3]]$AGG, col= cbPalette[3], type="o", cex = sp)
+lines(xax, out[[4]]$AGG, col= cbPalette[4], type="o", cex = sp)
+
+plot(xax, out[[1]]$MIC, col = cbPalette[1], cex = sp, type="l", lty = 1, cex.axis = sa, pch = 16, ylab=expression("Pools (gC" ~ m^{-2} ~ ")"), xlab="Years", main="MIC", cex.lab = sa, ylim=c(0,ymax[4])) 
+mtext("c)", side = 3, line = 1, adj = -0.25, font = 2, cex=1.25)
+lines(xax, out[[2]]$MIC, col= cbPalette[2], type="o",  cex = sp)
+lines(xax, out[[3]]$MIC, col= cbPalette[3], type="o", cex = sp)
+lines(xax, out[[4]]$MIC, col= cbPalette[4], type="o", cex = sp)
+
+plot(xax, out[[1]]$MAOM, col = cbPalette[1], cex = sp, type="l", lty = 1, cex.axis = sa, pch = 16, ylab=expression("Pools (gC" ~ m^{-2} ~ ")"), xlab="Years", main="MAOM", cex.lab = sa, ylim=c(0,ymax[5])) 
+mtext("e)", side = 3, line = 1, adj = -0.25, font = 2, cex=1.25)
+lines(xax, out[[2]]$MAOM, col= cbPalette[2], type="o", cex = sp)
+lines(xax, out[[3]]$MAOM, col= cbPalette[3], type="o", cex = sp)
+lines(xax, out[[4]]$MAOM, col= cbPalette[4], type="o", cex = sp)
+
+plot(NULL ,xaxt='n',yaxt='n',bty='n',ylab='',xlab='', xlim=0:1, ylim=0:1)
+legend("topleft", names.models[1:nmodels], col = cbPalette[1:7], lty = rep(1,nmodels), cex=0.75)
+
+plot(xax, rowSums(out[[1]][,-c(1)]), col = cbPalette[1], cex = sp, type="l", lty = 1, cex.axis = sa, ylab=expression("SOM Pool (gC" ~ m^{-2} ~ ")"), xlab="Years", main="SOM", cex.lab = sa, ylim=c(0,ymax[6])) 
+lines(xax, rowSums(out[[2]][,-c(1)]), col= cbPalette[2], type="o", cex = sp)
+lines(xax, rowSums(out[[3]][,-c(1)]), col= cbPalette[3], type="o", cex = sp)
+lines(xax, rowSums(out[[4]][,-c(1)]), col= cbPalette[4], type="o", cex = sp)
+}
+
+#Save the plot
+pdf(file=paste0(figdir,"default_model_run.pdf"), height=4, width=6)
+plot1()
+dev.off()
+}
+```
+
+#Calculate metrics
+```
+All of these metrics use SensLoc
+```
+```{r}
+if(do_sensitivity==1){
+start_time = Sys.time()
+
+#Initialize pools on which to conduct sensitivty analysis
+ sensvar <- NULL
+ for (i in 1:nmodels){
+     sensvar[[i]] <- names(state.V2.5pool.MMRMM)
+ }
+
+#Calculate sensitivity matrix for each model
+SensLoc <- NULL
+ptm <- proc.time()
+SensLoc[[1]] <- sensFun(func = Model.V1, parms = parameters[[1]], sensvar = sensvar[[1]], varscale = 1)
+SensLoc[[2]] <- sensFun(func = Model.V2.5pool.ECA, parms = parameters[[2]], sensvar = sensvar[[2]], varscale = 1)
+SensLoc[[3]] <- sensFun(func = Model.V2.5pool.MMRMM, parms = parameters[[3]], sensvar = sensvar[[3]], varscale = 1)
+SensLoc[[4]] <- sensFun(func = Model.V2.5pool.Lin, parms = parameters[[4]], sensvar = sensvar[[4]], varscale = 1)
+proc.time() - ptm
+}
+```
+
+##Relative parametric sensitivity for each model
+```
+Parameter sensitivity can be positive or negative. Here I calculate the average of the absolute value of the parameter sensitivity, as well as the standard deviation of the absolute value of the parameter sensitvity.
+```
+```{r}
+if(do_sensitivity==1){
+#Initialize the data frame
+par.sens <- tibble(pool=factor(levels=c("AGG","LMWC","MAOM","MIC","POM")), mean=double(), se=double(), n=integer(), models=character())
+npools.models <- list(c(1:5), c(6:10), c(11:15), c(16:20))
+
+#Reorganize the sensitivity matrix
+for (i in 1:(length(names.models)-1)){
+par.sens[npools.models[[i]],] <- SensLoc[[i]] %>% 
+  subset(x==length(run.steps.minus.one)) %>% #Select last timestep
+  dplyr::select(-x) %>%
+  dplyr::group_by(var) %>%
+  gather(parameter,value,2:(dim(SensLoc[[i]])[2]-1)) %>%
+  dplyr::rename(pool = var, sensitivity = value) %>%
+  dplyr::group_by(pool) %>%
+  dplyr::summarise( mean=mean(abs(sensitivity)), se=sd(abs(sensitivity))/dplyr::n(), n=dplyr::n()) %>%
+  dplyr::mutate(models=names.models[i] )
+}
+
+par.sens <- par.sens %>%
+  dplyr::mutate(models=factor(models, levels=c("Original", "V2 LIN", "V2 MM", "V2 ECA")))
+
+#Function that plots the parameter sensitivity of each pool
+par.sens.plot <- function(){
+ggplot(par.sens) +
+    geom_bar( aes(x=models, y=mean), stat="identity", fill="lightgray", colour="black") +
+    geom_errorbar( aes(x=models, ymin=mean-se, ymax=mean+se), width=0.4, colour="black", size=0.6) +
+    theme_classic() +
+    ylab("Mean Parameter Sensitivity") +
+    xlab("") + theme(panel.grid = element_blank(), axis.text.x = element_text(angle = 30, margin = margin(t = 20)), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+    facet_wrap(pool ~ ., scales="free_y",nrow=2)
+}
+
+#Save plot
+pdf(file=paste0(figdir,"param_sens_plot.pdf"), height=5, width=10)
+print(par.sens.plot())
+dev.off()
+
+#Save summary
+write.csv(par.sens, file= paste0(figdir,"par_sens.csv"))
+}
+```
+
+##Relative parameter correlation
+```{r, eval=F}
+#Not presented in manuscript, but is useful to know how correlated parameters are to each other
+if(do_sensitivity==1){
+#Initialize index and data frames
+j=1
+dfcor <- NULL
+mean.abs.par.corr <- matrix(nrow=(length(names.models)-1), ncol=length(levels(SensLoc[[1]]$var)))
+se.abs.par.corr <- matrix(nrow=(length(names.models)-1), ncol=length(levels(SensLoc[[1]]$var)))
+
+#Calculate parameter correlation
+for (i in 1:(length(names.models)-1)){
+ for (j in 1:length(levels(SensLoc[[i]]$var))){
+levels(SensLoc[[i]]$var) = c("AGG","LMWC","MIC","POM","MAOM")
+dfcor[[j]] <- cor(SensLoc[[i]][SensLoc[[i]]$var==levels(SensLoc[[i]]$var)[j],-(1:2)])
+mean.abs.par.corr[i,j] <- mean(apply(abs(dfcor[[j]]), MARGIN=1, FUN = mean))
+se.abs.par.corr[i,j] <- sqrt( sum( (apply(abs(dfcor[[j]]), MARGIN=1, FUN = sd ) / sqrt(apply(dfcor[[j]], MARGIN=1, FUN=length))) ^2 ) )
+ }
+}
+
+#Reorganize mean and se of parameter correlation
+mean.abs.par.corr <- as_tibble(mean.abs.par.corr)
+names(mean.abs.par.corr) <- levels(SensLoc[[1]]$var)
+se.abs.par.corr <- as_tibble(se.abs.par.corr)
+names(se.abs.par.corr) <- levels(SensLoc[[1]]$var)
+mean.abs.par.corr$models <- names.models[1:4]
+se.abs.par.corr$models <- names.models[1:4]
+se.abs.par.corr <- se.abs.par.corr %>%
+  gather(pool,se, AGG:MAOM)
+
+par.corr <- mean.abs.par.corr %>%
+  gather(pool,mean, AGG:MAOM) %>%
+  dplyr::mutate(se = se.abs.par.corr$se) %>%
+  dplyr::mutate(models=factor(models, levels=c("Original", "V2 LIN", "V2 MM", "V2 ECA")))
+  
+#Function that plots the parameter correlation
+par.corr.plot <- function(){
+ggplot(par.corr) +
+    geom_bar( aes(x=models, y=mean), stat="identity", fill="lightgray", colour="black") +
+    geom_errorbar( aes(x=models, ymin=mean-se, ymax=mean+se), width=0.4, colour="black", size=0.6) +
+    theme_classic() +
+    ylab("Mean Parameter Correlation") +
+    xlab("") + theme(panel.grid = element_blank(), axis.text.x = element_text(angle = 30, margin = margin(t = 20)), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+    facet_wrap(pool ~ . , nrow=2)
+}
+
+#Save plot
+pdf(file=paste0(figdir,"param_corr_plot.pdf"), height=5, width=10)
+print(par.corr.plot())
+dev.off()
+
+#Save summary
+write.csv(par.corr, file= paste0(figdir,"par_corr.csv"))
+}
+```
+
+##Total parameter correlation - all pools together
+```{r, eval=F}
+#Similar to the previous chunk, but calculates a mean across all model pools
+if(do_sensitivity==1){
+dfcor <- NULL
+mean.abs.par.corr <- NULL
+se.abs.par.corr <- NULL
+
+#Calculate mean and se parameter correlation across all pools
+for (i in 1:(length(names.models)-1)){
+dfcor <- cor(SensLoc[[i]][ ,-(1:2)])
+mean.abs.par.corr[i] <- mean(apply(abs(dfcor), MARGIN=1, FUN = mean))
+se.abs.par.corr[i] <- sqrt( sum( (apply(abs(dfcor), MARGIN=1, FUN = sd ) / sqrt(apply(dfcor, MARGIN=1, FUN=length))) ^2 ) )
+}
+
+#Reorganize data frame
+par.corr <- as.data.frame(cbind(names.models = names.models[1:4], mean.abs.par.corr, se.abs.par.corr))
+par.corr$mean.abs.par.corr <- as.numeric(as.character(mean.abs.par.corr))
+par.corr$se.abs.par.corr <- as.numeric(as.character(se.abs.par.corr))
+par.corr$names.models <- factor(par.corr$names.models[1:4],levels = c("Original", "V2 LIN", "V2 MM", "V2 ECA"))
+  
+#Function that plots the mean parameter correlation
+par.corr.plot <- function(){
+ggplot(par.corr) +
+    geom_bar( aes(x=names.models, y=mean.abs.par.corr), stat="identity", fill="lightgray", colour="black") +
+    geom_errorbar( aes(x=names.models, ymin=mean.abs.par.corr-se.abs.par.corr, ymax=mean.abs.par.corr+se.abs.par.corr), width=0.4, colour="black", size=0.6) +
+    theme_classic() +
+  ylab("Mean Parameter Correlation") +
+  xlab("") + theme(panel.grid = element_blank(), axis.text.x = element_text(angle = 30, margin = margin(t = 20)),
+                   axis.text = element_text(size=10),
+                   axis.title = element_text(size=12)
+                   )
+}
+
+#Save plot
+pdf(file=paste0(figdir,"param_corr_plot_tot.pdf"), height=3, width=3.75)
+print(par.corr.plot())
+dev.off()
+
+#Save summary
+write.csv(par.corr, file= paste0(figdir,"par_corr_mean.csv"))
+}
+```
+
+##Relative collinearity
+```{r}
+if(do_sensitivity==1){
+#Initialize ojbects used in loop
+j=1
+pindex <- vector("list",length=100)
+numofp <- NULL
+para.coll <- NULL
+collok <- vector(mode = "list", length = nmodels-1)
+
+#For 100 random draws of parameters, calculate the collinearity index, as described in Section 2.4 of Abramoff et al. (2021)
+set.seed(1)
+for (k in 1:length(levels(SensLoc[[j]]$var))){
+levels(SensLoc[[j]]$var) = c("AGG","LMWC","MIC","POM","MAOM")
+    for (j in 1:(nmodels-1)){
+          para.coll[[j]] <- parameters[[j]]
+    coll <- data.frame(matrix(nrow=length(pindex),ncol=length(para.coll[[j]])+2))
+        for (i in 1:length(pindex)) {
+        numofp[i] <- round(runif(1,1,length(para.coll[[j]])))
+        pindex[[i]] <- sample(1:length(para.coll[[j]]),numofp[i],replace=F)
+        coll[i,] <- collin(SensLoc[[j]], parset = pindex[[i]])
+        }
+    names(coll) <- names(collin(SensLoc[[j]][SensLoc[[j]]$var==levels(SensLoc[[j]]$var)[k],], parset = pindex[[1]]))
+    collok[[j]][[k]] <- na.omit(coll[order(coll$N),])
+    }
+}
+
+#Define dataframes, summarize and organize output
+frac.infinite.coll <- matrix(nrow=(nmodels-1), ncol=length(levels(SensLoc[[j]]$var)))
+mean.finite.coll <- matrix(nrow=(nmodels-1), ncol=length(levels(SensLoc[[j]]$var)))
+se.finite.coll <- matrix(nrow=(nmodels-1), ncol=length(levels(SensLoc[[j]]$var)))
+
+for (k in 1:length(levels(SensLoc[[j]]$var))){
+for (i in 1:(nmodels-1)){
+frac.infinite.coll[i,k] <- length(collok[[i]][[k]]$collinearity[is.infinite(collok[[i]][[k]]$collinearity)])/100
+mean.finite.coll[i,k] <- mean(collok[[i]][[k]]$collinearity[is.finite(collok[[i]][[k]]$collinearity)])
+se.finite.coll[i,k] <- sd(collok[[i]][[k]]$collinearity[is.finite(collok[[i]][[k]]$collinearity)]) / sqrt(length(collok[[i]][[k]]$collinearity[is.finite(collok[[i]][[k]]$collinearity)]))
+}
+}
+
+par.coll <- as.data.frame(rbind(mean.finite.coll, se.finite.coll, frac.infinite.coll))
+names(par.coll) <-  c("AGG","LMWC","MIC","POM","MAOM")
+par.coll$models <- rep(names.models[1:4],3)
+par.coll$var <- rep(c("mean","se", "frac.infinite"), each=(nmodels-1))
+par.coll <- par.coll %>% gather(pool, value, AGG:MAOM) %>% spread (var, value)
+par.coll$models <- factor(par.coll$models,levels = c("Original", "V2 LIN", "V2 MM", "V2 ECA"))
+  
+#Function that plots the collinearity for each model pool
+par.coll.plot <- function(){
+ggplot(par.coll) +
+    geom_bar( aes(x=models, y=mean), stat="identity", fill="lightgray", colour="black") +
+    geom_errorbar( aes(x=models, ymin=mean-se, ymax=mean+se), width=0.4, colour="black", size=0.6) +
+    theme_classic() +
+    ylab("Mean Collinearity") +
+    xlab("") + theme(panel.grid = element_blank(), axis.text.x = element_text(angle = 30, margin = margin(t = 20)), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+    facet_wrap(pool ~ . , nrow=2)
+}
+
+#Save plot
+pdf(file=paste0(figdir,"param_coll_plot.pdf"), height=5, width=10)
+print(par.coll.plot())
+dev.off()
+
+#Save summary
+write.csv(par.coll, file= paste0(figdir,"par_coll.csv"))
+}
+```
+
+##Total collinearity
+```{r}
+#Similar to the previous chunk but calculates the mean and se collinearity for all model pools together
+if(do_sensitivity==1){
+#Define objects used in loop
+pindex <- vector("list",length=100)
+numofp <- NULL
+para.coll <- NULL
+collok <- NULL
+
+#Calculate collinearity for all pools in model
+set.seed(1)
+    for (j in 1:(nmodels-1)){
+          para.coll[[j]] <- parameters[[j]]
+    coll <- data.frame(matrix(nrow=length(pindex),ncol=length(para.coll[[j]])+2))
+        for (i in 1:length(pindex)) {
+        numofp[i] <- round(runif(1,1,length(para.coll[[j]])))
+        pindex[[i]] <- sample(1:length(para.coll[[j]]),numofp[i],replace=F)
+        coll[i,] <- collin(SensLoc[[j]], parset = pindex[[i]])
+        }
+    names(coll) <- names(collin(SensLoc[[j]], parset = pindex[[1]]))
+    collok[[j]] <- na.omit(coll[order(coll$N),])
+    }
+
+#Define data frames, summarize and organize output
+frac.infinite.coll <- NULL
+mean.finite.coll <- NULL
+sd.finite.coll <- NULL
+
+for (i in 1:(nmodels-1)){
+frac.infinite.coll[i] <- length(collok[[i]]$collinearity[is.infinite(collok[[i]]$collinearity)])/100
+mean.finite.coll[i] <- mean(collok[[i]]$collinearity[is.finite(collok[[i]]$collinearity)])
+sd.finite.coll[i] <- sd(collok[[i]]$collinearity[is.finite(collok[[i]]$collinearity)])
+}
+
+par.coll <- as.data.frame(cbind(names.models=names.models[1:4], frac.infinite.coll, mean.finite.coll))
+par.coll$frac.infinite.coll <- as.numeric(as.character(frac.infinite.coll))
+par.coll$mean.finite.coll <- as.numeric(as.character(mean.finite.coll))
+par.coll$names.models <- factor(par.coll$names.models,levels = c("Original", "V2 LIN", "V2 MM", "V2 ECA"))
+
+#Function that plots collinearity for all model pools together
+par.coll.plot <- function(){
+ggplot(par.coll) +
+    geom_bar( aes(x=names.models, y=mean.finite.coll), stat="identity", fill="lightgray", colour="black") +
+    theme_classic() +
+    ylab("Mean Parameter Collinearity") +
+    xlab("") +
+    theme(panel.grid = element_blank(), axis.text.x = element_text(angle = 30, margin = margin(t = 20)), axis.text = element_text(size=10), axis.title = element_text(size=12))
+}
+
+#Save plot
+pdf(file=paste0(figdir,"param_coll_plot_tot.pdf"), height=3, width=3.75)
+print(par.coll.plot())
+dev.off()
+
+#Save data
+save(collok, SensLoc,file="Millennial_Version_Analysis_collok_SensLoc.Rdata")
+save(par.coll, SensLoc,file="par_coll_mean.Rdata")
+
+#End timer for sensitivity analyses
+end_time = Sys.time()
+param.sens.time <- end_time - start_time
+param.sens.time
+}
+```
+
+#Load Datasets
+```{r}
+#LUCAS data
+load(paste0(datadir,"LUCAS_write.Rdata"))
+
+#Viscarra-Rossel data
+load(paste0(datadir,"ViscarraRossel_write.Rdata"))
+
+#Georgiou data
+load(paste0(datadir,"Georgiou_write.Rdata"))
+kf <- kf[kf$depth > 0.05,] #Removes all profiles less that 5 cm in depth
+#kf <- kf[kf$VegType=="Crop",] #If uncommented, removes all sites that are designated as cropland
+```
+
+##Set Site-Specific Values
+```{r}
+#Combines clay and silt to estimate the % clay + silt, which is needed to calculate the maximum sorption capacity (Qmax)
+vf$ClaySilt <- vf$Clay + vf$Silt
+sdf$ClaySilt <- sdf$clay + sdf$silt
+kf$ClaySilt <- kf$SiltClayPercent
+
+initial_processing <- function(df){
+
+#Empirical relationship between % of clay and silt and the maximum C observed in MAOM from > 1200 measurements from Georgiou et al. (in review)
+df$qmax.gC.kgsoil <- df$ClaySilt*0.86
+
+#Remove rows with NA
+df <- df[!is.na(df$SoilTMP_C) & !is.na(df$SoilMoi_m3m3) & !is.na(df$NPP.gC.m2.d) & !is.na(df$qmax.gC.kgsoil),]
+
+return(df)
+}
+
+#Execute intital processing function defined above
+vf <- initial_processing(vf)
+kf <- initial_processing(kf)
+sdf <- initial_processing(sdf)
+
+#1=Alfisol
+#2=Andisol
+#3=Aridisol
+#4=Entisol
+#5=Gelisol
+#6=Histosol
+#7=Inceptisol
+#8=Mollisol
+#9=Oxisol
+#10=Spodosol
+#11=Ultisol
+#12=Vertisol
+
+#Set depth depending on reported value
+vf.depth <- 0.3 #m
+sdf.depth <- 0.2 #m
+kf.depth <- (kf$Bottom.depth-kf$Top.depth)/100 #m
+
+#Convert Qmax from g/kg soil to gC/m2 to X m depth, using either reported bulk density or bulk density from SoilGrids, depending on availability
+#Bulk density is originally in g/cm3 - here it is converted to modeled units of mg/cm3 (x1000)
+vf$qmax.gC.m2 <- vf$qmax.gC.kgsoil*vf$BD*1000*vf.depth
+sdf$qmax.gC.m2 <- sdf$qmax.gC.kgsoil*sdf$BD_soilgrids*1000*sdf.depth
+kf$qmax.gC.m2 <- kf$qmax.gC.kgsoil*kf$BD_soilgrids*1000*kf.depth
+
+#Set pH from reported values or SoilGrids, depending on availability
+vf$pH_CaCl2 <- vf$pHc
+sdf$pH_CaCl2 <- sdf$pH_in_CaCl2
+kf$pH_CaCl2 <- kf$pH_Soilgrids
+
+#Set pools and dataset ID
+##Modeled pool values are converted from gC/kg to gC/m2 using bulk density and depth
+sdf$POM.AGG <- sdf$OC_pom_g_kg*1000*sdf.depth*sdf$BD_soilgrids
+sdf$MAOM <- sdf$OC_sc_g_kg*1000*sdf.depth*sdf$BD_soilgrids
+sdf$SOM <- (sdf$OC_pom_g_kg+sdf$OC_sc_g_kg)*1000*sdf.depth*sdf$BD_soilgrids 
+sdf$Dataset <- rep("LUCAS",dim(sdf)[1])
+
+vf$POM.AGG <- vf$pocd030.gC.m2
+vf$MAOM <- vf$hocd030.gC.m2
+vf$SOM <- vf$pocd030.gC.m2+vf$hocd030.gC.m2
+vf$Dataset <- rep("Viscarra-Rossel",dim(vf)[1])
+
+kf$MAOM <- kf$SiltClayC*1000*kf.depth*kf$BD_soilgrids
+kf$SOM <- kf$Bulk.C*1000*kf.depth*kf$BD_soilgrids
+kf$Dataset <- rep("Georgiou",dim(kf)[1])
+
+#Join datasets together and organize
+int <- dplyr::full_join(vf, sdf)
+alldf <- int %>% dplyr::full_join(kf)
+
+alldf$BD_all <- c(alldf$BD[alldf$Dataset=="Viscarra-Rossel"],alldf$BD_soilgrids[alldf$Dataset=="LUCAS" | alldf$Dataset=="Georgiou"])
+
+alldf$depth_all <- c(rep(vf.depth, dim(alldf[alldf$Dataset=="Viscarra-Rossel",])[1]), rep(sdf.depth, dim(alldf[alldf$Dataset=="LUCAS",])[1]), kf.depth)
+
+#Create dataframe for model inputs
+inputs.prep <- cbind(alldf$SoilTMP_C, alldf$SoilMoi_m3m3, alldf$NPP.gC.m2.d, alldf$qmax.gC.m2, alldf$pH_CaCl2, alldf$BD_all*1000,alldf$depth_all,alldf$ClaySilt)
+```
+
+##Choose dataset
+```{r}
+#Based on switches, prepare the observed pools and model inputs dataframe for either one of the datasats, or all datasets together, depending on desired analysis
+if(testDat == "all"){
+  obsdf <- alldf
+  inputs.prep <- inputs.prep
+}else{
+  obsdf <- alldf[alldf$Dataset==testDat,]
+  inputs.prep <- inputs.prep[alldf$Dataset==testDat,]
+} 
+
+if(testDat == "Georgiou"){
+Obs.prep <- as.data.frame(cbind(1:dim(obsdf)[1], obsdf$MAOM, obsdf$SOM))
+names(Obs.prep) <- c("site","MAOM","SOM")
+inputs.prep <- inputs.prep[!is.na(Obs.prep$SOM),]
+}else{
+Obs.prep <- as.data.frame(cbind(1:dim(obsdf)[1], obsdf$SOM, obsdf$MAOM, obsdf$POM.AGG))
+names(Obs.prep) <- c("site","SOM","MAOM","POM.AGG") 
+inputs.prep <- inputs.prep[!is.na(Obs.prep$SOM),]
+}
+
+if(do_FME_SS_Century == 1){
+  Obs.prep <- as.data.frame(cbind(1:dim(obsdf)[1], obsdf$SOM))
+  names(Obs.prep) <- c("site","SOM")}  
+
+if(testDat == "Georgiou" | testDat == "all"){
+Obs.prep <- Obs.prep[!is.na(Obs.prep$SOM),]
+}
+```
+
+##Create training and test sets
+```{r}
+#Partitions data into training and test datasets
+set.seed(1234)
+trainIndex <- createDataPartition(Obs.prep$SOM, p = proptrain, list = FALSE, times = 1)
+obsTrain <- Obs.prep[trainIndex,]
+obsTest <- Obs.prep[-trainIndex,]  
+
+inputsTrain <- inputs.prep[trainIndex,]
+inputsTest <- inputs.prep[-trainIndex,]
+
+Obs.pools <- obsTrain
+inputs <- inputsTrain
+```
+
+#Sensitivity to inputs
+##Load V2 MMRMM
+```{r}
+if(do_SS_plots==1){
+    # Model construction and definition of derivatives
+    derivs.V2.5pool.MMRMM.Sensitivity <- function(step.num,state,parameters) {
+          with(as.list(c(state,parameters)), {
+            
+         # Soil type properties  
+            #Equation 10
+            kaff_lm = exp(-parameters$param_p1 * parameters$param_pH - parameters$param_p2) * parameters$kaff_des
+            
+            #Equation 11
+            param_qmax = 1000 * 0.86 * parameters$param_claysilt 
+            
+          # Hydrological properties
+            
+            #Equation 4
+            scalar_wd = (forc_sw(step.num) / parameters$porosity)^0.5
+            
+            #Equation 15
+            scalar_wb = exp(parameters$lambda * -parameters$matpot) * (parameters$kamin + (1 - parameters$kamin) * ((parameters$porosity - forc_sw(step.num)) / parameters$porosity)^0.5) * scalar_wd
+          
+          # Decomposition
+            
+            gas_const <- 8.31446
+            
+            #Equation 3
+            vmax_pl = parameters$alpha_pl * exp(-parameters$eact_pl / (gas_const * (forc_st(step.num) + 273.15))) 
+            
+            #Equation 2
+            # POM -> LMWC
+            if(POM>0){
+              f_PO_LM = POM * vmax_pl * MIC * scalar_wd / (parameters$kaff_pl + MIC)
+            }else{
+              f_PO_LM=0
+            }
+            
+            #Equation 5
+            # POM -> AGG
+            if(POM>0){
+              f_PO_AG = parameters$rate_pa * scalar_wd * POM
+            }else{
+              f_PO_AG=0
+            }
+            
+            #Equation 6
+            # AGG -> MAOM + POM
+            if(AGG>0){
+              f_AG_break = parameters$rate_break * scalar_wd * AGG
+            }else{
+              f_AG_break=0
+            }
+            
+            #Equation 8
+            # LMWC -> out of system leaching
+            if(LMWC>0){
+              f_LM_leach = parameters$rate_leach * scalar_wd * LMWC
+            }else{
+              f_LM_leach=0
+            }
+
+            #Equation 9
+            # LMWC -> MAOM
+            if(LMWC>0 && MAOM>0){
+              f_LM_MA = scalar_wd * kaff_lm * LMWC * (1 - MAOM / param_qmax)
+            }else{
+              f_LM_MA=0
+            }
+    
+            #Equation 12
+            # MAOM -> LMWC
+            if(MAOM>0){
+              f_MA_LM = parameters$kaff_des * MAOM / param_qmax
+            }else{
+              f_MA_LM=0
+            }
+            
+            #Equation 14
+            vmax_lb = parameters$alpha_lb * exp(-parameters$eact_lb / (gas_const * (forc_st(step.num) + 273.15)))
+            
+            #Equation 13
+            # LMWC -> MIC
+            if(LMWC>0){
+              f_LM_MB = vmax_lb * scalar_wb * LMWC * MIC / (parameters$kaff_lb + LMWC)
+            }else{
+              f_LM_MB=0
+            }
+            
+            #Equation 16
+            # MIC -> MAOM + LMWC
+            if(MIC>0){
+              f_MB_turn = parameters$rate_bd * MIC^2.0
+            }else{
+              f_MB_turn=0
+            }
+            
+            #Equation 18
+            # MAOM -> AGG
+            if(MAOM>0){  
+              f_MA_AG = parameters$rate_ma * scalar_wd * MAOM
+            }else{
+              f_MA_AG=0
+            }
+            
+            #Equation 22
+            # microbial growth flux, but is not used in mass balance
+            
+            #Equation 21
+            # MIC -> atmosphere
+            if(MIC>0){  
+              f_MB_atm = f_LM_MB * (1 - (parameters$cue_ref - parameters$cue_t * (forc_st(step.num) - parameters$tae_ref) ) )
+            }else{
+              f_MB_atm=0
+            }
+            
+            #Equation 1
+            dPOM = forc_npp(step.num) * parameters$param_pi + f_AG_break * parameters$param_pa - f_PO_AG - f_PO_LM
+            
+            #Equation 7
+            dLMWC = forc_npp(step.num) * (1. - parameters$param_pi) - f_LM_leach + f_PO_LM - f_LM_MA - f_LM_MB + f_MB_turn * (1. - parameters$param_pb) + f_MA_LM
+            
+            #Equation 17
+            dAGG = f_MA_AG + f_PO_AG - f_AG_break
+            
+            #Equation 20
+            dMIC = f_LM_MB - f_MB_turn - f_MB_atm
+            
+            #Equation 19
+            dMAOM = f_LM_MA - f_MA_LM + f_MB_turn * parameters$param_pb - f_MA_AG + f_AG_break * (1. - parameters$param_pa)
+            
+            return(list(c(dPOM, dLMWC, dAGG, dMIC, dMAOM)))
+          })
+    }
+}
+```
+
+##Run sensitivity to inputs analysis
+```{r}
+#Estimates the equilibrium value of model pools as a function of litter inputs x temp x VWC x pH x claysilt, described in Section 2.4 of Abramoff et al. (2021)
+
+if(do_SS_plots==1){
+#Define initial states and parameters to use
+    state5 <- c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1) #initial states
+    derivsSS <- c(derivs.V2.5pool.MMRMM.Sensitivity)
+    paramsSS <- list(parameters[[3]])
+    stateSS <- list(state5)
+
+#Set inputs based on maximum observed range in dataset
+SSeq <- NULL
+range_forc_st <- seq(from = range(obsdf$SoilTMP_C)[1], to= range(obsdf$SoilTMP_C)[2], length.out = 10) #degC
+range_forc_sw <- seq(from = range(obsdf$SoilMoi_m3m3)[1], to= range(obsdf$SoilMoi_m3m3)[2], length.out = 10) #m3/m3
+range_forc_npp <- seq(from = range(obsdf$NPP.gC.m2.d)[1], to= range(obsdf$NPP.gC.m2.d)[2], length.out = 10) #gC/m2/d
+range_parm_pH <- seq(from=range(obsdf$pH_CaCl2, na.rm=T)[1], to=range(obsdf$pH_CaCl2, na.rm=T)[2], length.out = 10)
+range_parm_clay <- seq(from=range(obsdf$ClaySilt)[1], to=range(obsdf$ClaySilt)[2], length.out = 10)
+
+#Initialize output matrix
+EqRuns <- matrix(nrow=(1)*length(range_forc_st)*length(range_forc_sw)*length(range_forc_npp)*length(range_parm_pH)*length(range_parm_clay), ncol=11)
+
+#Calculate steady state for all combinations of litter inputs x temp x VWC x pH x claysilt - this may take a while
+ptm <- proc.time()
+for (n in 1:length(range_parm_clay)){
+  paramsSS[[1]]$param_claysilt <- range_parm_clay[n]
+  for (m in 1:length(range_parm_pH)){
+      paramsSS[[1]]$param_pH <- range_parm_pH[m]
+    for (l in 1:length(range_forc_npp)){
+      forc_npp <- approxfun(1:SStime, rep(range_forc_npp[l],SStime))
+          for (k in 1:length(range_forc_sw)){  
+          forc_sw <- approxfun(1:SStime, rep(range_forc_sw[k],SStime))
+              for (j in 1:length(range_forc_st)){
+              forc_st <- approxfun(1:SStime, rep(range_forc_st[j],SStime)) 
+                  for (i in 1:length(derivsSS)){
+                  SSeq[[i]] <- stode(y = stateSS[[i]], time = SStime, func = derivsSS[[i]], parms = paramsSS[[i]], positive=TRUE)
+                  SSindex <- i + length(derivsSS)*(j-1) + length(derivsSS)*length(range_forc_st)*(k-1) + length(derivsSS)*length(range_forc_st)*length(range_forc_npp)*(l-1) + length(derivsSS)*length(range_forc_st)*length(range_forc_npp)*length(range_parm_pH)*(m-1) + length(derivsSS)*length(range_forc_st)*length(range_forc_npp)*length(range_parm_pH)*length(range_parm_clay)*(n-1)
+                      if (length(stateSS[[i]]) < 5) {
+                      EqRuns[SSindex,] <- c(names.models[i], forc_st(1), forc_sw(1), forc_npp(1), range_parm_pH[m], range_parm_clay[n], SSeq[[i]]$y, NA) 
+                      } else {
+                      EqRuns[SSindex,] <- c(names.models[i], forc_st(1), forc_sw(1), forc_npp(1), range_parm_pH[m], range_parm_clay[n], SSeq[[i]]$y)
+                      }
+                  }
+              }
+          }
+      }
+  }
+}
+proc.time() - ptm
+
+#Oranize output
+EqRuns <- as_tibble(EqRuns) %>%
+  dplyr::rename( models=V1, forc_st=V2, forc_sw=V3, forc_npp=V4, parm_pH=V5, parm_clay=V6, POM=V7, LMWC=V8, AGG=V9, MIC=V10, MAOM=V11) %>%
+  dplyr::mutate_at( vars(forc_st, forc_sw, forc_npp, POM, LMWC, AGG, MIC, MAOM), as.numeric)
+
+ EqRuns <- EqRuns %>% gather(pool, value, POM:MAOM)
+ EqRuns$models <- rep("V2 5-pool RMM/MM", dim(EqRuns)[1])
+
+#Save output
+save(EqRuns,file="Millennial_Version_Analysis_EqRuns_extralongs.Rdata")
+}
+```
+
+##Plot sensitivity to inputs
+```{r}
+if(do_SS_plots==1){
+#Load output in case chunk is run separately from previous
+load(file="Millennial_Version_Analysis_EqRuns_extralongs.Rdata")
+EqRuns$parm_clay <- as.numeric(EqRuns$parm_clay)
+EqRuns$parm_pH <- as.numeric(EqRuns$parm_pH)
+EqRuns5pool <- EqRuns
+
+#Plot sensitivity of model pools to temperature at equilibrium
+pdf(file=paste0(figdir,"eq_plots_temp_all.pdf"), height=4.24, width=9)
+print(ggplot(EqRuns5pool) +
+    geom_smooth( aes(x=forc_st, y=value ), color="black") +
+    theme_classic() + 
+      theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("Temperature (" ~ degree ~ "C)")) + 
+  facet_wrap(pool ~ ., scales="free_y",nrow=2))
+dev.off()
+
+#Plot sensitivity of model pools to VWC at equilibrium
+pdf(file=paste0(figdir,"eq_plots_vwc_all.pdf"), height=4.24, width=9)
+print(ggplot(EqRuns5pool) +
+    geom_smooth( aes(x=forc_sw, y=value ), color="black") +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("VWC (" ~ m^{3} ~ m^{-3} ~ ")")) +
+  facet_wrap(pool ~ ., scales="free_y",nrow=2))
+dev.off()
+
+#Plot sensitivity of model pools to litter inputs at equilibrium
+pdf(file=paste0(figdir,"eq_plots_npp_all.pdf"), height=4.24, width=9)
+print(ggplot(EqRuns5pool) +
+    geom_smooth( aes(x=forc_npp, y=value ), color="black") +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("NPP (gC" ~ m^{-2} ~ d^{-1} ~ ")")) +
+  facet_wrap(pool ~ ., scales="free_y",nrow=2))
+dev.off()
+
+#Plot sensitivity of model pools to pH at equilibrium
+pdf(file=paste0(figdir,"eq_plots_pH_all.pdf"), height=4.24, width=9)
+print(ggplot(EqRuns5pool) +
+    geom_smooth( aes(x=parm_pH, y=value ), color="black") +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("pH")) +
+  facet_wrap(pool ~ ., scales="free_y",nrow=2))
+dev.off()
+
+#Plot sensitivity of model pools to clay and silt at equilibrium
+pdf(file=paste0(figdir,"eq_plots_clay_all.pdf"), height=4.24, width=9)
+print(ggplot(EqRuns5pool) +
+    geom_smooth( aes(x=parm_clay, y=value ), color="black") +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("% Clay & Silt")) +
+  facet_wrap(pool ~ ., scales="free_y",nrow=2))
+dev.off()
+
+#Similar to the plots above, but with all pools on the same plot rather than each pool as a facet
+g1 <- ggplot(EqRuns5pool) +
+    geom_smooth( aes(x=forc_st, y=value, color=pool )) +
+    theme_classic() + 
+      theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15), legend.position = "none") +
+  scale_color_manual(values = mypal) + 
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("Temperature (" ~ degree ~ "C)"))
+
+g2 <- ggplot(EqRuns5pool) +
+    geom_smooth( aes(x=forc_sw, y=value, color=pool )) +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15), legend.position = "none") +
+  scale_color_manual(values = mypal) + 
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("VWC (" ~ m^{3} ~ m^{-3} ~ ")"))
+
+ g3 <- ggplot(EqRuns5pool) +
+    geom_smooth( aes(x=forc_npp, y=value, color=pool )) +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15), legend.position = "none") +
+  scale_color_manual(name="Pool", values = mypal) + 
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("NPP (gC" ~ m^{-2} ~ d^{-1} ~ ")"))
+ 
+  g4 <- ggplot(EqRuns5pool) +
+    geom_smooth( aes(x=parm_pH, y=value, color=pool )) +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15), legend.position = "none") +
+  scale_color_manual(name="Pool", values = mypal) + 
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("pH"))
+  
+   g5 <- ggplot(EqRuns5pool) +
+    geom_smooth( aes(x=parm_clay, y=value, color=pool )) +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15), legend.position = "none") +
+  scale_color_manual(name="Pool", values = mypal) + 
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("% Clay & Silt"))
+ 
+ g.legend <- ggplot(EqRuns5pool) +
+    geom_smooth( aes(x=forc_st, y=value, color=pool )) +
+      theme(panel.grid = element_blank(), strip.text = element_text(size=15)) +
+  scale_color_manual(name = "Pool", values = mypal)
+
+#Plot sensitivity of model pools to inputs together (Figure 3 in Abramoff et al. (2021))
+pdf(file=paste0(figdir,"eq_plots_compressed_all.pdf"), height=4, width=10)
+multiplot(g1, g5, g2, g4, g3, cols=3)
+dev.off()
+
+pdf(file=paste0(figdir,"eq_plots_legend_all.pdf"), height=4, width=4)
+print(g.legend)
+dev.off()
+}
+```
+
+#Find best model fit to data with FME
+##Load V2 MMRMM
+```{r}
+if(do_FME_SS_V2MMRMM==1){
+    model.name <- "V2.5pool.MMRMM"
+    state <- c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1)
+    
+#Here we fit only a subset of parameters, those which are uncommented. These parameters have a sensitivity index of < |0.25| using the sensfun function of FME. The code is in the Run Fit chunk below and is an option in Switches (do_sens_fun).
+parToFit.pools <- c(#param_pi = parameters[[3]]$param_pi,
+                    param_pa = parameters[[3]]$param_pa,
+                    kaff_pl = parameters[[3]]$kaff_pl,
+                    alpha_pl = parameters[[3]]$alpha_pl,
+                    eact_pl = parameters[[3]]$eact_pl,
+                    rate_pa = parameters[[3]]$rate_pa,
+                    rate_break = parameters[[3]]$rate_break,
+                    #rate_leach = parameters[[3]]$rate_leach,
+                    #kaff_des = parameters[[3]]$kaff_des,
+                    param_p1 = parameters[[3]]$param_p1,
+                    #param_p2 = parameters[[3]]$param_p2,
+                    kaff_lb = parameters[[3]]$kaff_lb,
+                    alpha_lb = parameters[[3]]$alpha_lb, 
+                    eact_lb = parameters[[3]]$eact_lb, 
+                    rate_bd = parameters[[3]]$rate_bd,
+                    rate_ma = parameters[[3]]$rate_ma,
+                    cue_ref = parameters[[3]]$cue_ref,
+                    #cue_t = parameters[[3]]$cue_t,
+                    #tae_ref = parameters[[3]]$tae_ref,
+                    #matpot = parameters[[3]]$matpot,
+                    #lambda = parameters[[3]]$lambda,
+                    porosity = parameters[[3]]$porosity,
+                    #kamin = parameters[[3]]$kamin,
+                    param_pb = parameters[[3]]$param_pb
+                    ) 
+ 
+parToFit.lower <- c(#param_pi = 0,
+                    param_pa = 0,
+                    kaff_pl = 0,
+                    alpha_pl = 0,
+                    eact_pl = 0,
+                    rate_pa = 0,
+                    rate_break = 0,
+                    #rate_leach = 0,
+                    #kaff_des = 0,
+                    param_p1 = 0,
+                    #param_p2 = 0,
+                    kaff_lb = 0,
+                    alpha_lb = 0, 
+                    eact_lb = 0, 
+                    rate_bd = 0,
+                    rate_ma = 0,
+                    cue_ref = 0,
+                    #cue_t = -Inf,
+                    #tae_ref = -Inf
+                    #matpot = 0,
+                    #lambda = 0,
+                    porosity = 0,
+                    #kamin = 0,
+                    param_pb = 0
+                    )
+parToFit.upper <- c(#param_pi = 1,
+                    param_pa = 1,
+                    kaff_pl = Inf,
+                    alpha_pl = Inf,
+                    eact_pl = Inf,
+                    rate_pa = Inf,
+                    rate_break = Inf,
+                    #rate_leach = Inf,
+                    #kaff_des = Inf,
+                    param_p1 = Inf,
+                    #param_p2 = Inf,
+                    kaff_lb = Inf,
+                    alpha_lb = Inf, 
+                    eact_lb = Inf, 
+                    rate_bd = Inf,
+                    rate_ma = Inf,
+                    cue_ref = 1,
+                    #cue_t = Inf,
+                    #tae_ref = Inf
+                    #matpot = Inf,
+                    #lambda = Inf,
+                    porosity = 1,
+                    #kamin = Inf,
+                    param_pb = 1
+                    )
+
+    # Definition of model derivatives
+    derivs.V2.5pool.MMRMM <- function(step.num,state,parameters) {
+          with(as.list(c(state,parameters)), {
+            
+          # Soil type properties  
+            #Equation 10
+            kaff_lm = exp(-parameters$param_p1 * parameters$param_pH - parameters$param_p2) * parameters$kaff_des
+            
+            #Equation 111
+            #param_qmax = parameters$param_bulkd * parameters$param_pc * parameters$param_claysilt 
+            
+          # Hydrological properties
+            
+            #Equation 4
+            scalar_wd = (parameters$forc_sw / parameters$porosity)^0.5
+            
+            #Equation 15
+            scalar_wb = exp(parameters$lambda * -parameters$matpot) * (parameters$kamin + (1 - parameters$kamin) * ((parameters$porosity - parameters$forc_sw) / parameters$porosity)^0.5) * scalar_wd
+          
+          # Decomposition
+            
+            gas_const <- 8.31446
+            
+            #Equation 3
+            vmax_pl = parameters$alpha_pl * exp(-parameters$eact_pl / (gas_const * (parameters$forc_st + 273.15))) 
+            
+            #Equation 2
+            # POM -> LMWC
+            if(POM>0){
+              f_PO_LM = POM * vmax_pl * MIC * scalar_wd / (parameters$kaff_pl + MIC)
+            }else{
+              f_PO_LM=0
+            }
+            
+            #Equation 5
+            # POM -> AGG
+            if(POM>0){
+              f_PO_AG = parameters$rate_pa * scalar_wd * POM
+            }else{
+              f_PO_AG=0
+            }
+            
+            #Equation 6
+            # AGG -> MAOM + POM
+            if(AGG>0){
+              f_AG_break = parameters$rate_break * scalar_wd * AGG
+            }else{
+              f_AG_break=0
+            }
+            
+            #Equation 8
+            # LMWC -> out of system leaching
+            if(LMWC>0){
+              f_LM_leach = parameters$rate_leach * scalar_wd * LMWC
+            }else{
+              f_LM_leach=0
+            }
+
+            #Equation 9
+            # LMWC -> MAOM
+            if(LMWC>0 && MAOM>0){
+              f_LM_MA = scalar_wd * kaff_lm * LMWC * (1 - MAOM / parameters$param_qmax)
+            }else{
+              f_LM_MA=0
+            }
+    
+            #Equation 12
+            # MAOM -> LMWC
+            if(MAOM>0){
+              f_MA_LM = parameters$kaff_des * MAOM / parameters$param_qmax
+            }else{
+              f_MA_LM=0
+            }
+            
+            #Equation 14
+            vmax_lb = parameters$alpha_lb * exp(-parameters$eact_lb / (gas_const * (parameters$forc_st + 273.15)))
+            
+            #Equation 13
+            # LMWC -> MIC
+            if(LMWC>0){
+              f_LM_MB = vmax_lb * scalar_wb * LMWC * MIC / (parameters$kaff_lb + LMWC)
+            }else{
+              f_LM_MB=0
+            }
+            
+            #Equation 16
+            # MIC -> MAOM + LMWC
+            if(MIC>0){
+              f_MB_turn = parameters$rate_bd * MIC^2.0
+            }else{
+              f_MB_turn=0
+            }
+            
+            #Equation 18
+            # MAOM -> AGG
+            if(MAOM>0){  
+              f_MA_AG = parameters$rate_ma * scalar_wd * MAOM
+            }else{
+              f_MA_AG=0
+            }
+            
+            #Equation 22
+              # microbial growth flux, but is not used in mass balance
+            
+            #Equation 21
+            # MIC -> atmosphere
+            if(MIC>0){  
+              f_MB_atm = f_LM_MB * (1 - (parameters$cue_ref - parameters$cue_t * (parameters$forc_st - parameters$tae_ref) ) )
+            }else{
+              f_MB_atm=0
+            }
+            
+            #Equation 1
+            dPOM = parameters$forc_npp * parameters$param_pi + f_AG_break * parameters$param_pa - f_PO_AG - f_PO_LM
+            
+            #Equation 7
+            dLMWC = parameters$forc_npp * (1. - parameters$param_pi) - f_LM_leach + f_PO_LM - f_LM_MA - f_LM_MB + f_MB_turn * (1. - parameters$param_pb) + f_MA_LM
+            
+            #Equation 17
+            dAGG = f_MA_AG + f_PO_AG - f_AG_break
+      
+            #Equation 20
+            dMIC = f_LM_MB - f_MB_turn - f_MB_atm
+            
+            #Equation 19
+            dMAOM = f_LM_MA - f_MA_LM + f_MB_turn * parameters$param_pb - f_MA_AG + f_AG_break * (1. - parameters$param_pa)
+            
+            return(list(c(dPOM, dLMWC, dAGG, dMIC, dMAOM)))
+          })
+        }
+
+    # Parameters to use
+    pars <- unlist(parameters.SS[[2]])
+    parameters.in <- as.list(pars)
+
+    # Define output matrix
+    state.SS <- matrix(nrow=dim(inputs)[1], ncol=length(state))
+
+#Function that solves for model steady state given the inputs at each site
+    SS.Model.pools <- function(parsin, inputs) {
+      for(i in 1:dim(inputs)[1]){
+        tryCatch({
+          parsin$forc_st <- inputs[i,1]
+          parsin$forc_sw <- inputs[i,2]
+          parsin$forc_npp <- inputs[i,3]
+          parsin$param_qmax <- inputs[i,4]
+          parsin$param_pH <- inputs[i,5]
+          parsin$param_bulkd <- inputs[i,6]
+          parsin$param_depth <- inputs[i,7]
+          state.SS[i,] <- stode(y = state, time = SStime, func = derivs.V2.5pool.MMRMM, parms = parsin, positive=TRUE)$y
+        }, error=function(e){})
+      }
+          modeled.pools <- as.data.frame(cbind(1:dim(inputs)[1], state.SS, rowSums(state.SS),(state.SS[,1]+state.SS[,2]+state.SS[,3]+state.SS[,4])))
+          names(modeled.pools) <- c("site","POM","LMWC","AGG","MIC","MAOM","SOM","POM.AGG")
+      return(modeled.pools)
+    }
+}
+```
+
+##Load Century
+```{r}
+if(do_FME_SS_Century==1){
+
+        model.name <- "Century"
+        state <- SS.Century$y
+        
+#Here we fit only a subset of parameters, those which are uncommented. These parameters have a sensitivity index of < |0.25| using the sensfun function of FME. The code is in the Run Fit chunk below and is an option in Switches (do_sens_fun).
+parToFit.pools <- c(w1 = parameters[[5]]$w1, 
+                    w2 = parameters[[5]]$w2, 
+                    t1 = parameters[[5]]$t1, 
+                    t2 = parameters[[5]]$t2, 
+                    t3 = parameters[[5]]$t3, 
+                    t4 = parameters[[5]]$t4,
+                    c1 = parameters[[5]]$c1,
+                    c2 = parameters[[5]]$c2,
+                    #k_active = parameters[[5]]$k_active,
+                    k_slow = parameters[[5]]$k_slow,
+                    k_passive = parameters[[5]]$k_passive,
+                    #slow_to_active = parameters[[5]]$slow_to_active,
+                    slow_to_passive = parameters[[5]]$slow_to_passive,
+                    #passive_to_active = parameters[[5]]$passive_to_active,
+                    #active_to_passive = parameters[[5]]$active_to_passive,
+                    #k_strlitter = parameters[[5]]$k_strlitter,
+                    #k_metlitter = parameters[[5]]$k_metlitter,
+                    input_to_strlitter = parameters[[5]]$input_to_strlitter,
+                    #metlitter_to_active = parameters[[5]]$metlitter_to_active,
+                    #strlitter_to_active = parameters[[5]]$strlitter_to_active,
+                    #strlitter_to_slow = parameters[[5]]$strlitter_to_slow,
+                    LigFrac = parameters[[5]]$LigFrac
+                    )
+
+parToFit.lower <- c(w1 = 0, 
+                    w2 = 0, 
+                    t1 = 0, 
+                    t2 = 0, 
+                    t3 = 0, 
+                    t4 = 0,
+                    c1 = 0,
+                    c2 = 0,
+                    #k_active = 0,
+                    k_slow = 0,
+                    k_passive = 0,
+                    #slow_to_active = 0, 
+                    slow_to_passive = 0,
+                    #passive_to_active = 0,
+                    #active_to_passive = 0,
+                    #k_strlitter =  0,
+                    #k_metlitter =  0,
+                    input_to_strlitter =0,
+                    #metlitter_to_active = 0,
+                    #strlitter_to_active = 0,
+                    #strlitter_to_slow = 0,
+                    LigFrac = 0
+                     )
+
+parToFit.upper <- c(w1 = Inf, 
+                    w2 = Inf, 
+                    t1 = Inf, 
+                    t2 = Inf,
+                    t3 = Inf, 
+                    t4 = Inf, 
+                    c1 = Inf,
+                    c2 = Inf,
+                    #k_active = Inf,
+                    k_slow = Inf,
+                    k_passive = Inf,
+                    #slow_to_active = 1, 
+                    slow_to_passive = 1,
+                    #passive_to_active = 1,
+                    #active_to_passive = 1,
+                    #k_strlitter = 1,
+                    #k_metlitter = 1,
+                    input_to_strlitter = 1,
+                    #metlitter_to_active = 1,
+                    #strlitter_to_active = 1,
+                    #strlitter_to_slow = 1,
+                    LigFrac = 1
+                    )
+
+        # Definition of derivatives
+        derivs.Century <- function(step.num,state,parameters) {
+          with(as.list(c(state,parameters)), {
+
+#Equation B1
+  t_scalar <- (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 * (parameters$forc_st - parameters$t1))) /
+    (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 *(30.0 - parameters$t1)))
+
+#Equation B2
+  w_scalar <- 1.0 / (1.0 + parameters$w1 * exp(-parameters$w2 * parameters$forc_sw/0.39))
+  
+#Equation B3
+  f_TEX = parameters$c1 - parameters$c2*parameters$clay_silt*0.01 #converts from % to fraction
+
+#Equation B4
+  f_StrLitter = StrLitter * parameters$k_strlitter * t_scalar * w_scalar * exp(-3*parameters$LigFrac)
+  
+#Equation B5
+  f_MetLitter = MetLitter * parameters$k_metlitter * t_scalar * w_scalar  
+  
+#Equation B6
+  f_ACTIVE <- ACTIVE * parameters$k_active * t_scalar * w_scalar * f_TEX
+    
+#Equation B7
+  f_SLOW <- SLOW * parameters$k_slow * t_scalar * w_scalar
+  
+#Equation B8
+  f_PASSIVE <- PASSIVE * parameters$k_passive * t_scalar * w_scalar
+  
+#Equation B9
+   dStrLitter = parameters$input_to_strlitter * parameters$forc_npp - f_StrLitter
+  
+#Equation B10
+  dMetLitter = (1-parameters$input_to_strlitter) * parameters$forc_npp - f_MetLitter
+
+#Equation B11  
+  dACTIVE <- (1-parameters$LigFrac) * parameters$strlitter_to_active * f_StrLitter + parameters$metlitter_to_active * f_MetLitter  + f_SLOW * parameters$slow_to_active + f_PASSIVE * parameters$passive_to_active - f_ACTIVE
+
+#Equation B12
+  dSLOW <-  parameters$LigFrac * parameters$strlitter_to_slow * f_StrLitter + f_ACTIVE * (1-f_TEX-parameters$active_to_passive) - f_SLOW
+
+#Equation B13
+  dPASSIVE <- f_ACTIVE * parameters$active_to_passive + f_SLOW * parameters$slow_to_passive - f_PASSIVE
+
+            return(list(c(dStrLitter, dMetLitter, dACTIVE, dSLOW, dPASSIVE)))
+          })
+        }
+
+        # Defines parameters    
+        pars <- unlist(parameters.SS[[3]])
+        parameters.in <- as.list(pars)
+        
+        # Define output matrix
+        state.SS <- matrix(nrow=dim(inputs)[1], ncol=length(state))
+        
+#Function that solves for model steady state given the inputs at each site
+        SS.Model.pools <- function(parsin, inputs) {
+          for(i in 1:dim(inputs)[1]){
+            tryCatch({
+              parsin$forc_st <- inputs[i,1]
+              parsin$forc_sw <- inputs[i,2]
+              parsin$forc_npp <- inputs[i,3]
+              parsin$clay_silt <- inputs[i,8]
+              state.SS[i,] <- stode(y = state, time = SStime, func = derivs.Century, parms = parsin, positive=TRUE)$y
+            }, error=function(e){})
+          }
+          modeled.pools <- as.data.frame(cbind(1:dim(inputs)[1], state.SS, rowSums(state.SS)))
+          names(modeled.pools) <- c("site","StrLitter","MetLitter","ACTIVE","SLOW","PASSIVE","SOM")
+          return(modeled.pools)
+        }
+}
+```
+
+##Run Fit
+```{r}
+# Definition of the cost function
+Objective.pools <- function(x, parset = names(x)) {
+  pars[parset] <- x
+  out <- SS.Model.pools(pars, inputs)
+  modCost(out, Obs.pools, x="site", weight = "none")
+}
+
+# Calculate a sensitivity index of the C stock for each parameter using the observed input data 
+if(do_sens_fun==1){
+  start_time = Sys.time()
+  
+#Calculate the sensitivity index
+  Sfun.pools <- sensFun(Objective.pools, pars)
+#Plot the sensitivity index
+  pdf(file=paste0(figdir,paste0("sensplot_pools_",model.name,"_",testDat,".pdf")), height=8, width=5)
+  plot(summary(Sfun.pools))
+  dev.off()
+
+#Save the data
+  write.csv(summary(Sfun.pools), file= paste0(figdir,model.name,"_",testDat,"_Sensplot_table.csv"))
+  
+  end_time = Sys.time()
+  sensitivity.time <- end_time - start_time
+  print(sensitivity.time)
+}
+
+#Fit the model using the Levenberg-Marquardt algorithm, described in Section 2.6.2 of Abramoff et al. (2021)
+if(do_mod_fit==1){
+start_time = Sys.time()
+
+# Fit the model
+Fit.pools <- modFit(
+  f = Objective.pools,
+  p = parToFit.pools,
+  lower = parToFit.lower,
+  upper = parToFit.upper,
+  method = "Marq",
+  jac = NULL,
+  control = list(
+    ftol = 1e-06,
+    ptol = 1e-06,
+    gtol = 1e-06,
+    nprint = 1
+  ),
+  hessian = TRUE
+)
+end_time = Sys.time()
+fit.time <- end_time - start_time
+
+# Save the best parameters as a table
+outtab <- cbind(Fit.pools$par, parToFit.lower, parToFit.pools, parToFit.upper)
+colnames(outtab) <- c("FitPars","Lower","Default","Upper")
+write.csv(outtab, file= paste0(figdir,model.name,"_",testDat,"_table.csv"))
+
+# Recover the optimized parameters and plot the results
+start_time = Sys.time()
+
+pars[names(parToFit.pools)] <- Fit.pools$par
+optim.pools <- SS.Model.pools(pars, inputs)
+
+end_time = Sys.time()
+optim.time <- end_time - start_time
+
+ymax_plot <- ceiling(max(max(Obs.pools[, "SOM"]/1000, na.rm=T), max(optim.pools[, "SOM"]/1000, na.rm=T)))
+ymax_plot <- ifelse(ymax_plot>100, 20, ymax_plot)
+
+if(testDat == "Georgiou" & do_FME_SS_Century == 0){
+pdf(file=paste0(figdir,paste0("fit_",model.name,"_",testDat,".pdf")), height=4, width=4)
+par(mfrow = c(1,1))
+par(mar = c(3.5,3.7,0,0)+.9)
+par(oma = c(0,0,0,0))
+plot(Obs.pools[, "SOM"]/1000, optim.pools[, "SOM"]/1000, xlab = expression("Observed OM (kg " ~ m^{2} ~ ")"), ylab = expression("Predicted OM (kg " ~ m^{2} ~ ")"), lwd = 2, type = "p", col = "black", ylim=c(0,ymax_plot), xlim=c(0,ymax_plot))
+lines(Obs.pools[, "MAOM"]/1000, optim.pools[, "MAOM"]/1000,  lwd = 2, type = "p", col = "darkblue")
+abline(0,1,lty=2)
+legend("topright", c("MAOM","SOM"), col=c("darkblue","black"), pch=16)
+dev.off()
+
+}else{
+  
+  if(do_FME_SS_Century == 1){
+  pdf(file=paste0(figdir,paste0("fit_",model.name,"_",testDat,".pdf")), height=4, width=4)
+par(mfrow = c(1,1))
+par(mar = c(3.5,3.7,0,0)+.9)
+par(oma = c(0,0,0,0))
+plot(Obs.pools[, "SOM"]/1000, optim.pools[, "SOM"]/1000, xlab = expression("Observed OM (kg " ~ m^{2} ~ ")"), ylab = expression("Predicted OM (kg " ~ m^{2} ~ ")"), lwd = 2, type = "p", col = "black", ylim=c(0,ymax_plot), xlim=c(0,ymax_plot))
+  legend("topright", c("SOM"), col=c("black"), pch=16)
+  abline(0,1,lty=2)
+  dev.off()
+  }else{
+    pdf(file=paste0(figdir,paste0("fit_",model.name,"_",testDat,".pdf")), height=4, width=4)
+par(mfrow = c(1,1))
+par(mar = c(3.5,3.7,0,0)+.9)
+par(oma = c(0,0,0,0))
+plot(Obs.pools[, "SOM"]/1000, optim.pools[, "SOM"]/1000, xlab = expression("Observed OM (kg " ~ m^{2} ~ ")"), ylab = expression("Predicted OM (kg " ~ m^{2} ~ ")"), lwd = 2, type = "p", col = "black", ylim=c(0,ymax_plot), xlim=c(0,ymax_plot))
+lines(Obs.pools[, "MAOM"]/1000, optim.pools[, "MAOM"]/1000,  lwd = 2, type = "p", col = "darkblue")
+lines(Obs.pools[, "POM.AGG"]/1000, optim.pools[, "POM.AGG"]/1000,  lwd = 2, type = "p", col = "lightblue")
+abline(0,1,lty=2)
+legend("topright", c("POM & AGG","MAOM","SOM"), col=c("lightblue","darkblue","black"), pch=16)
+dev.off()
+  }
+}
+
+#Save observed and modeled pools
+save(optim.pools, Obs.pools, testDat, file=paste0(model.name,"_",testDat,".Rdata"))
+
+print(fit.time, optim.time)
+}
+```
+#Cross-validation for model
+```{r}
+#If proptrain is less than 1, then this chunk calculates model performance indices by using the parameters fit to the training dataset to model pools which are then compared to observed pools from the testing dataset
+if(proptrain != 1){
+
+#Get best parameters
+pars[names(parToFit.pools)] <- Fit.pools$par
+#Calculate model pools at testing sites
+optim.test <- SS.Model.pools(pars = pars, inputs = inputsTest)
+
+#Calculate model performance indices
+##Bias is modeled - observed
+fit.SOM <- summary(lm(optim.test[1:dim(inputsTest)[1],]$SOM ~ obsTest$SOM))
+SOM.bias <- optim.test[1:dim(inputsTest)[1],]$SOM/1000 - obsTest$SOM/1000
+dim.SOM <- dim(inputsTest)[1]
+RMSE_kg <- sqrt(sum((obsTest$SOM/1000- optim.test[1:dim.SOM,]$SOM/1000)^2, na.rm=T)/dim.SOM)
+AIC <- dim.SOM * log(sum((obsTest$SOM/1000- optim.test[1:dim.SOM,]$SOM/1000)^2, na.rm=T)/dim.SOM) + 2*length(parameters[[3]])
+MBE_SOM <- mean(SOM.bias, na.rm=T)
+MAE_SOM <- mean(abs(SOM.bias), na.rm=T)
+print(list(RMSE_kg = RMSE_kg,AIC = AIC, MAE_SOM = MAE_SOM, MBE_SOM = MBE_SOM, fit.SOM= fit.SOM))
+
+fit.MAOM <- summary(lm(optim.test[1:dim(inputsTest)[1],]$MAOM ~ obsTest$MAOM))
+MAOM.bias <- optim.test[1:dim(inputsTest)[1],]$MAOM/1000 - obsTest$MAOM/1000
+dim.MAOM <- dim(inputsTest)[1]
+MBE_MAOM <- mean(MAOM.bias, na.rm=T)
+MAE_MAOM <- mean(abs(MAOM.bias), na.rm=T)
+print(list(MAE_MAOM = MAE_MAOM, MBE_MAOM = MBE_MAOM, fit.MAOM= fit.MAOM))
+
+fit.POM <- summary(lm(optim.test[1:dim(inputsTest)[1],]$POM.AGG ~ obsTest$POM.AGG))
+POM.bias <- optim.test[1:dim(inputsTest)[1],]$POM.AGG/1000 - obsTest$POM.AGG/1000
+dim.POM <- dim(inputsTest)[1]
+MBE_POM <- mean(POM.bias, na.rm=T)
+MAE_POM <- mean(abs(POM.bias), na.rm=T)
+print(list(MAE_POM = MAE_POM, MBE_POM = MBE_POM, fit.POM= fit.POM))
+}
+```
+
+#Model performance
+##Indices for Millennial V2
+```{r}
+#Load data if executed separately from earlier chunks
+load(paste0(model.name,"_",testDat,".Rdata"))
+
+#Calculates model performance indices if the model is fit to the entire dataset
+#Most of these except for R2 (R2in in the manuscript) are not included in Abramoff et al. (2021), but they can be interesting to explore
+if(do_explore_bias == 1){
+if(do_FME_SS_Century != 1){
+MAOM.bias <- optim.pools[, "MAOM"]/1000 - Obs.pools[, "MAOM"]/1000
+SOM.bias <- optim.pools[, "SOM"]/1000 - Obs.pools[, "SOM"]/1000
+RMSE_kg <- sqrt(sum((Obs.pools[, "SOM"]/1000- optim.pools[, "SOM"]/1000)^2, na.rm=T)/dim(Obs.pools)[1])
+AIC <- dim(Obs.pools)[1] * log(sum((Obs.pools[, "SOM"]/1000- optim.pools[, "SOM"]/1000)^2, na.rm=T)/dim(Obs.pools)[1]) + 2*length(parameters[[3]])
+
+MBE_MAOM <- mean(MAOM.bias, na.rm=T)
+MBE_SOM <- mean(SOM.bias, na.rm=T)
+MAE_MAOM <- mean(abs(MAOM.bias), na.rm=T)
+MAE_SOM <- mean(abs(SOM.bias), na.rm=T)
+
+summary(lm(optim.pools[, "SOM"] ~ Obs.pools[, "SOM"]))
+summary(lm(optim.pools[, "MAOM"] ~ Obs.pools[, "MAOM"]))
+
+if(testDat != "Georgiou"){
+POM.AGG.bias <- optim.pools[, "POM.AGG"]/1000 - Obs.pools[, "POM.AGG"]/1000
+  
+MAE_POM_AGG <- mean(abs(POM.AGG.bias), na.rm=T)
+MBE_POM_AGG <- mean(POM.AGG.bias, na.rm=T)
+
+summary(lm(optim.pools[, "POM.AGG"] ~ Obs.pools[, "POM.AGG"]))
+}
+
+#Organize and join dataframes for plotting SOC stocks together with environmental characteristics
+if(testDat=="Georgiou"|testDat=="LUCAS"|testDat=="Viscarra-Rossel"){
+datdf <- alldf[alldf$Dataset == testDat,]
+}else{
+datdf <- alldf
+}
+datdf <- datdf[!is.na(datdf$SOM),]
+cordf <- datdf %>% dplyr::select(NPP.gC.m2.d, SoilMoi_m3m3, SoilTMP_C, ClaySilt, pH_CaCl2)
+prep1df <- datdf %>% dplyr::select(NPP.gC.m2.d, SoilMoi_m3m3, SoilTMP_C, ClaySilt, pH_CaCl2, Biome, MAOM, SOM)
+
+if(testDat != "Georgiou"){
+prep1df <- datdf %>% dplyr::select(NPP.gC.m2.d, SoilMoi_m3m3, SoilTMP_C, ClaySilt, pH_CaCl2, Biome, POM.AGG, MAOM, SOM)
+}
+prep1df$Source <- rep("Observed", 1:length(dim(prep1df)[1]))
+prep2df <- datdf %>% dplyr::select(NPP.gC.m2.d, SoilMoi_m3m3, SoilTMP_C, ClaySilt, pH_CaCl2, Biome)
+  if(testDat != "Georgiou"){
+  prep2df$POM.AGG <- optim.pools[, "POM.AGG"]
+  }
+prep2df$MAOM <- optim.pools[, "MAOM"]
+prep2df$SOM <- optim.pools[, "SOM"]
+
+prep2df$Source <- rep("Predicted", 1:length(dim(prep2df)[1]))
+
+plotdf <- dplyr::full_join(prep1df, prep2df)
+
+plot(alldf$BD, alldf$SOM.bias, xlab="Bulk Density", ylab="MAOM bias")
+plot(alldf$BD_soilgrids, alldf$SOM.bias, xlab="Bulk Density Measured", ylab="Bulk Density SoilGrids")
+}
+}
+```
+
+##Indices for Century
+```{r}
+if(do_explore_bias == 1){
+if(do_FME_SS_Century == 1){
+
+#Calculates model performance indices if the model is fit to the entire dataset
+#Most of these except for R2 (R2in in the manuscript) are not included in Abramoff et al. (2021), but they can be interesting to explore
+SOM.bias <- optim.pools[, "SOM"]/1000 - Obs.pools[, "SOM"]/1000
+ 
+RMSE_kg <- sqrt(sum((Obs.pools[, "SOM"]/1000- optim.pools[, "SOM"]/1000)^2)/dim(Obs.pools)[1])
+
+#Century parameters
+AIC = dim(Obs.pools)[1] * log(sum((Obs.pools[, "SOM"]/1000- optim.pools[, "SOM"]/1000)^2)/dim(Obs.pools)[1]) + 2*length(parameters[[5]])
+
+MBE_SOM <- mean(SOM.bias)
+MAE_SOM <- mean(abs(SOM.bias))
+
+summary(lm(optim.pools[, "SOM"] ~ Obs.pools[, "SOM"]))
+
+#Organize and join dataframes for plotting SOC stocks together with environmental characteristics
+if(testDat=="Georgiou"|testDat=="LUCAS"|testDat=="Viscarra-Rossel"){
+datdf <- alldf[alldf$Dataset == testDat,]
+}else{
+datdf <- alldf
+}
+datdf <- datdf[!is.na(datdf$SOM),]
+cordf <- datdf %>% dplyr::select(NPP.gC.m2.d, SoilMoi_m3m3, SoilTMP_C, ClaySilt, pH_CaCl2)
+
+prep1df <- datdf %>% dplyr::select(NPP.gC.m2.d, SoilMoi_m3m3, SoilTMP_C, ClaySilt, pH_CaCl2, Biome, SOM)
+prep1df$Source <- rep("Observed", 1:length(dim(prep1df)[1]))
+prep2df <- datdf %>% dplyr::select(NPP.gC.m2.d, SoilMoi_m3m3, SoilTMP_C, ClaySilt, pH_CaCl2, Biome)
+prep2df$SOM <- optim.pools[, "SOM"]
+prep2df$Source <- rep("Predicted", 1:length(dim(prep2df)[1]))
+
+plotdf <- dplyr::full_join(prep1df, prep2df)
+}
+}
+```
+
+##Model performance by biome and NPP
+```{r}
+if(do_explore_bias == 1){
+#Define biome names
+biome.char <- as.data.frame(cbind(1:14, c("Tropical and Subtropical Moist Broadleaf Forests", "Tropical and Subtropical Dry Broadleaf Forests", "Tropical and Subtropical Coniferous Forests", "Temperate Broadleaf and Mixed Forests", "Temperate Coniferous Forests", "Boreal Forests/Taiga", "Tropical and Subtropical Grasslands, Savannas, and Shrublands", "Temperate Grasslands, Savannas, and Shrublands", "Flooded Grasslands and Savannas", "Montane Grasslands and Savannas", "Tundra", "Mediterranean Forests, Woodlands, and Scrub", "Deserts and Xeric Shrublands", "Mangroves"), c("Trop Moist BF", "Trop Dry BF", "Trop CF", "Temp BMF", "Temp CF", "Boreal F", "Trop Grass", "Temp Grasslands", "Flooded", "Montane", "Tundra", "Mediterranean", "Deserts", "Mangroves")))
+names(biome.char) <- c("Biome","Biome.Description","Biome.Short")
+
+#Define short biome names
+plotdf$Biome <- as.factor(plotdf$Biome)
+whole.char <- dplyr::left_join(plotdf, biome.char)
+whole.char$Biome.Short <- factor(whole.char$Biome.Short,levels = c("Trop Moist BF", "Trop Dry BF", "Trop CF", "Temp BMF", "Temp CF", "Boreal F", "Trop Grass", "Temp Grasslands", "Flooded", "Montane", "Tundra", "Mediterranean", "Deserts", "Mangroves"))
+
+#Make plots of SOC stocks and environmental characteristics by biome and NPP
+##Many of these plots are exploratory and not presented in manuscript, but can be useful to see relationships between environmental characteristics
+if(do_FME_SS_Century != 1){
+pdf(file=paste0(figdir,"biomes_MAOM_",model.name,"_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char, aes(x=Biome.Short, y=MAOM/1000, fill=Source)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("MAOM (kg C" ~ m^{-2} ~ ")")) +
+  xlab(""))
+dev.off()
+
+pdf(file=paste0(figdir,"NPPgrad_MAOM_",model.name,"_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char, aes(x=NPP.gC.m2.d, y=MAOM/1000, color=Source)) + geom_point(alpha = 0.3) + 
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("MAOM (kg C" ~ m^{-2} ~ ")")) +
+  xlab(expression("NPP (g C" ~ m^{-2} ~ d^{-1} ~ ")")))
+dev.off()
+
+if(testDat != "Georgiou") {
+pdf(file=paste0(figdir,"biomes_POM.AGG_",model.name,"_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char, aes(x=Biome.Short, y=POM.AGG/1000, fill=Source)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("POM & AGG (kg C" ~ m^{-2} ~ ")")) +
+  xlab(""))
+dev.off()
+
+pdf(file=paste0(figdir,"NPPgrad_POM.AGG_",model.name,"_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char, aes(x=NPP.gC.m2.d, y=POM.AGG/1000, color=Source)) + geom_point(alpha = 0.3) + 
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("POM % AGG (kg C" ~ m^{-2} ~ ")")) +
+  xlab(expression("NPP (g C" ~ m^{-2} ~ d^{-1} ~ ")")))
+dev.off()
+}
+}
+
+pdf(file=paste0(figdir,"biomes_SOM_",model.name,"_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char, aes(x=Biome.Short, y=SOM/1000, fill=Source)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("SOM (kg C" ~ m^{-2} ~ ")")) +
+  xlab(""))
+dev.off()
+
+pdf(file=paste0(figdir,"NPPgrad_SOM_",model.name,"_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char, aes(x=NPP.gC.m2.d, y=SOM/1000, color=Source)) + geom_point(alpha = 0.3) + 
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("SOM (kg C" ~ m^{-2} ~ ")")) +
+  xlab(expression("NPP (g C" ~ m^{-2} ~ d^{-1} ~ ")")))
+dev.off()
+
+pdf(file=paste0(figdir,"biomes_NPP_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char, aes(x=Biome.Short, y=NPP.gC.m2.d)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("NPP (g C" ~ m^{-2} ~ d^{-1} ~ ")")) +
+  xlab(""))
+dev.off()
+
+pdf(file=paste0(figdir,"biomes_Temp_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char, aes(x=Biome.Short, y=SoilTMP_C)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("Soil Temperature (" ~ degree ~ "C)")) +
+  xlab(""))
+dev.off()
+
+pdf(file=paste0(figdir,"biomes_Moi_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char, aes(x=Biome.Short, y=SoilMoi_m3m3)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("VWC (" ~ m^{3} ~ m^{-3} ~ ")")) +
+  xlab(""))
+dev.off()
+
+pdf(file=paste0(figdir,"biomes_Clay_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char, aes(x=Biome.Short, y=ClaySilt)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("Clay and Silt (%)")) +
+  xlab(""))
+dev.off()
+
+pdf(file=paste0(figdir,"biomes_pH_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char, aes(x=Biome.Short, y=pH_CaCl2)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("pH")) +
+  xlab(""))
+dev.off()
+
+pdf(file=paste0(figdir,"biomes_count_",testDat,".pdf"), height=3, width=4)
+print(ggplot(whole.char[whole.char$Source=="Observed",], aes(x=Biome.Short)) + geom_bar(stat="count") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab("Count") +
+  xlab("Biome"))
+dev.off()
+
+if(do_FME_SS_Century != 1){
+if(testDat != "Georgiou"){
+longdf <- plotdf %>% dplyr::rename("POM & AGG" = POM.AGG) %>%
+  pivot_longer(cols="POM & AGG":SOM, names_to = "Pool", values_to = "gCm2")
+pdfwidth.biomes = 6
+}else{
+longdf <- plotdf %>%
+  pivot_longer(cols=MAOM:SOM, names_to = "Pool", values_to = "gCm2")  
+pdfwidth.biomes = 4
+}
+pivdf <- longdf %>% 
+  dplyr::group_by(Source) %>%
+  dplyr::mutate(row = dplyr::row_number()) %>%
+  pivot_wider(names_from = "Source", values_from = "gCm2") %>%
+  dplyr::left_join(biome.char)
+pivdf$Biome.Short <- factor(pivdf$Biome.Short,levels = c("Trop Moist BF", "Trop Dry BF", "Trop CF", "Temp BMF", "Temp CF", "Boreal F", "Trop Grass", "Temp Grasslands", "Flooded", "Montane", "Tundra", "Mediterranean", "Deserts", "Mangroves"))
+
+pdf(file=paste0(figdir,"pointsbiomes_SOM_",model.name,"_",testDat,".pdf"), height=4, width=pdfwidth.biomes)
+print(ggplot(pivdf, aes(x=Observed/1000, y=Predicted/1000, colour=Biome.Short, shape=Pool)) + geom_point() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  theme_classic() +
+  xlab(expression("Observed SOM (kg C" ~ m^{-2} ~ ")")) +
+  ylab(expression("Predicted SOM (kg C" ~ m^{-2} ~ ")")) +
+  facet_wrap(. ~ Pool, nrow=2, scales = "free") +
+  labs(colour = "Biome") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed"))
+dev.off()
+
+}else{
+  #Reorganize plotdf
+longdf <- plotdf %>%  pivot_longer(cols=SOM, names_to = "Pool", values_to = "gCm2")
+pivdf <- longdf %>% 
+  dplyr::group_by(Source) %>%
+  dplyr::mutate(row = row_number()) %>%
+  pivot_wider(names_from = "Source", values_from = "gCm2") %>%
+  dplyr::left_join(biome.char)
+pivdf$Biome.Short <- factor(pivdf$Biome.Short,levels = c("Trop Moist BF", "Trop Dry BF", "Trop CF", "Temp BMF", "Temp CF", "Boreal F", "Trop Grass", "Temp Grasslands", "Flooded", "Montane", "Tundra", "Mediterranean", "Deserts", "Mangroves"))
+
+pdf(file=paste0(figdir,"pointsbiomes_SOM_",model.name,"_",testDat,".pdf"), height=2.1, width=4)
+print(ggplot(pivdf, aes(x=Observed/1000, y=Predicted/1000, colour=Biome.Short)) + geom_point(pch=15) +
+  theme_classic() +
+  theme(axis.text=element_text(size=10),
+  axis.title=element_text(size=10)) +
+  xlab(expression("Observed SOM (kg C" ~ m^{-2} ~ ")")) +
+  ylab(expression("Predicted SOM (kg C" ~ m^{-2} ~ ")")) +
+  labs(colour = "Biome") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed"))
+dev.off()
+}
+
+}
+```
+
+##Explore model performance by land use categories in LUCAS
+```{r}
+#The LUCAS dataset uses particular land use categories, and while not a focus of the manuscript (although see Figure S13 for a summary figure), it can be interesting to explore the differences between predictions in different land use categories. This was initially done to see if there was a particular land use category that had much more error than the others.
+if(do_explore_bias == 1){
+if(testDat=="LUCAS"){
+pdf(file=paste0(figdir,"LU_count_",testDat,".pdf"), height=3, width=4)
+ ggplot(datdf, aes(x=LU)) + geom_bar(stat="count") +
+   theme_classic() +
+   theme(axis.text.x = element_text(angle = 90)) +
+   ylab("Count") +
+   xlab("Land Use")
+ dev.off()
+ 
+plotdf$LU <- rep(datdf$LU, 2)
+
+#LUCAS LU categories
+#C woodland: 
+#C10 (Braodleaved woodland)
+#C20 (Coniferous woodland)
+#C30 (Mixed woodland)
+#E grassland:
+#E10 (Grassland with sparse tree/shrub cover)
+#E20 (Grassland withouth tree/shrub cover)
+#E30 (Spontaneously re-vegetated surfaces)
+
+#Broadleaved = C10
+#Mixed Forest = C30
+#Coniferous = C20
+#"Pure" grass = E20
+
+#Define names for LU categories
+LU.char <- as.data.frame(cbind(c("C10","C30","C20","E20","E10","E30"), c("Broadleaved","Mixed forest","Coniferous","Pure grass","Mixed grass","Re-vegetated")))
+names(LU.char) <- c("LU","LU.Description")
+
+LUdf <- dplyr::left_join(plotdf, LU.char)
+LUdf$LU.Description <- factor(LUdf$LU.Description,levels = c("Pure grass","Broadleaved","Mixed Forest","Coniferous","Mixed grass","Re-vegetated"))
+
+#Plot modeled stocks for LU categories
+pdf(file=paste0(figdir,"LU_MAOM_",model.name,"_",testDat,".pdf"), height=3, width=4)
+print(ggplot(LUdf, aes(x=LU.Description, y=MAOM/1000, fill=Source)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("MAOM (kg C" ~ m^{-2} ~ ")")) +
+  xlab(""))
+dev.off()
+
+if(testDat != "Georgiou") {
+pdf(file=paste0(figdir,"LU_POM.AGG_",model.name,"_",testDat,".pdf"), height=3, width=4)
+print(ggplot(LUdf, aes(x=LU.Description, y=POM.AGG/1000, fill=Source)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("POM & AGG (kg C" ~ m^{-2} ~ ")")) +
+  xlab(""))
+dev.off()
+}
+
+pdf(file=paste0(figdir,"LU_SOM_",model.name,"_",testDat,".pdf"), height=3, width=4)
+ggplot(LUdf, aes(x=LU.Description, y=SOM/1000, fill=Source)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("SOM (kg C" ~ m^{-2} ~ ")")) +
+  xlab("")
+dev.off()
+
+#Function that calculates model performance indices for LUCAS LU categories
+do_LU_errors <- function(LU.Name){
+SOM.bias.LU <- LUdf[LUdf$Source=="Predicted" & LUdf$LU.Description == LU.Name,]$SOM/1000 - LUdf[LUdf$Source=="Observed" & LUdf$LU.Description == LU.Name,]$SOM/1000
+MBE_LU <- mean(SOM.bias.LU, na.rm=T)
+MAE_LU <- mean(abs(SOM.bias.LU), na.rm=T)
+LUfit <- NA
+
+if(!all(is.na(SOM.bias.LU))){
+ LUfit <- summary(lm(LUdf[LUdf$Source=="Predicted" & LUdf$LU.Description == LU.Name,]$SOM ~ LUdf[LUdf$Source=="Observed" & LUdf$LU.Description == LU.Name,]$SOM)) 
+}
+
+return(list(LUfit, MBE_LU, MAE_LU))
+}
+
+#Executes function for particular LU categories
+do_LU_errors("Pure grass")
+do_LU_errors("Broadleaved")
+do_LU_errors("Mixed Forest")
+do_LU_errors("Coniferous")
+}
+}
+```
+
+##Plot model inputs
+```{r}
+#Exploratory plots that allow users to look at the relationship between different stocks and model inputs
+pdf(file=paste0(figdir,"plotofinputs.pdf"), height=4, width=4)
+
+ggplot(alldf, aes(x=NPP.gC.m2.d, y=MAOM, color=Dataset)) +
+  geom_point()
+ggplot(alldf, aes(x=NPP.gC.m2.d, y=POM.AGG, color=Dataset)) + geom_point()
+
+ggplot(alldf, aes(x=SoilMoi_m3m3, y=MAOM, color=Dataset)) +
+  geom_point()
+ggplot(alldf, aes(x=SoilMoi_m3m3, y=POM.AGG, color=Dataset)) + geom_point()
+
+ggplot(alldf, aes(x=SoilTMP_C, y=MAOM, color=Dataset)) +
+  geom_point()
+ggplot(alldf, aes(x=SoilTMP_C, y=POM.AGG, color=Dataset)) + geom_point()
+
+ggplot(alldf, aes(x=ClaySilt, y=MAOM, color=Dataset)) +
+  geom_point()
+ggplot(alldf, aes(x=ClaySilt, y=POM.AGG, color=Dataset)) + geom_point()
+
+ggplot(alldf, aes(x=pH_CaCl2, y=MAOM, color=Dataset)) +
+  geom_point()
+ggplot(alldf, aes(x=pH_CaCl2, y=POM.AGG, color=Dataset)) + geom_point()
+
+dev.off()
+```
+
+#Turnover Time
+##Set runtime
+```{r}
+#We reset the runtime, this time with a spin up
+num.spin = 99
+#Note: We tested different spin up cycles needed to reach steady state
+#29 years is within 0.1% (0.001) of full spin-up value (SS at 100 years, same as 300)
+#9 years is within 5% (0.05) of full spin-up value (but 11 years less at upper end)
+end.spin = dim(inputdata)[1]*(num.spin)
+run.steps <- 1:(dim(inputdata)[1]*(num.spin+1))
+run.steps.minus.one <- run.steps[1:length(run.steps)-1]
+
+#Set dynamic input functions
+    forc_st <- approxfun(run.steps, rep(inputdata$forc_st,(num.spin+1)))
+    forc_sw <- approxfun(run.steps, rep(inputdata$forc_sw,(num.spin+1)))
+    forc_npp <- approxfun(run.steps,rep(inputdata$forc_npp,(num.spin+1)))
+```
+
+##Define dynamic models
+###V2 5 pools MMRMM with respiration
+```{r}
+#These equations include respiration as an output, which we need to estimate a turnover time
+  derivs.V2.5pool.MMRMM.resp <- function(step.num,state,parameters) {
+        with(as.list(c(state,parameters)), {
+          
+# Soil type properties  
+  #Equation 10
+  kaff_lm = exp(-parameters$param_p1 * parameters$param_pH - parameters$param_p2) * parameters$kaff_des
+
+  #Equation 11
+ #param_qmax = 1 * 1000 * 0.86 * 80     
+  
+# Hydrological properties
+
+  #Equation 4
+  scalar_wd = (forc_sw(step.num) / parameters$porosity)^0.5
+
+  #Equation 15
+  scalar_wb = exp(parameters$lambda *-parameters$matpot) * (parameters$kamin + (1 - parameters$kamin) * ((parameters$porosity - forc_sw(step.num)) / parameters$porosity)^0.5) * scalar_wd
+
+# Decomposition
+
+  gas_const <- 8.31446
+   
+  #Equation 3
+  vmax_pl = parameters$alpha_pl * exp(-parameters$eact_pl / (gas_const * (forc_st(step.num) + 273.15)))
+  
+  #Equation 2
+    # POM -> LMWC
+      if(POM>0 && MIC>0){
+        f_PO_LM = POM * vmax_pl * MIC * scalar_wd / (parameters$kaff_pl + MIC)
+      }else{
+        f_PO_LM=0
+      }
+      
+  #Equation 5
+    # POM -> AGG
+    if(POM>0){
+      f_PO_AG = parameters$rate_pa * scalar_wd * POM
+    }else{
+      f_PO_AG=0
+    }
+    
+  #Equation 6
+    # AGG -> MAOM + POM
+    if(AGG>0){
+      f_AG_break = parameters$rate_break * scalar_wd * AGG
+    }else{
+      f_AG_break=0
+    }
+    
+  #Equation 8
+    # LMWC -> out of system leaching
+    if(LMWC>0){
+      f_LM_leach = parameters$rate_leach * scalar_wd * LMWC
+    }else{
+      f_LM_leach=0
+    }
+    
+    #Equation 9
+    # LMWC -> MAOM
+    if(LMWC>0 && MAOM>0){
+      f_LM_MA = scalar_wd * kaff_lm * LMWC * (1 - MAOM / parameters$param_qmax)
+    }else{
+      f_LM_MA=0
+    }
+    
+  #Equation 12
+    # MAOM -> LMWC
+    if(MAOM>0){
+      f_MA_LM = parameters$kaff_des * MAOM / parameters$param_qmax
+    }else{
+      f_MA_LM=0
+    }
+    
+  #Equation 14
+    vmax_lb = parameters$alpha_lb * exp(-parameters$eact_lb / (gas_const * (forc_st(step.num) + 273.15)))
+  
+  #Equation 13
+    # LMWC -> MIC
+      if(LMWC>0 && MIC>0){
+        f_LM_MB = vmax_lb * scalar_wb * LMWC * MIC / (parameters$kaff_lb + LMWC)
+      }else{
+        f_LM_MB=0
+      }
+    
+  #Equation 16
+    # MIC -> MAOM + LMWC
+    if(MIC>0){
+      f_MB_turn = parameters$rate_bd * MIC^2.0
+    }else{
+      f_MB_turn=0
+    }
+    
+  #Equation 18
+    # MAOM -> AGG
+    if(MAOM>0){  
+      f_MA_AG = parameters$rate_ma * scalar_wd * MAOM
+    }else{
+      f_MA_AG=0
+    }
+    
+  #Equation 22
+    # microbial growth flux, but is not used in mass balance
+  
+  #Equation 21
+    # MIC -> atmosphere
+    if(MIC>0 && LMWC>0){  
+    f_MB_atm = f_LM_MB * (1 - (parameters$cue_ref - parameters$cue_t * (forc_st(step.num) - parameters$tae_ref) ) )  
+    }else{
+      f_MB_atm=0
+    }
+    
+  #Equation 1
+    dPOM = forc_npp(step.num) * parameters$param_pi + f_AG_break * parameters$param_pa - f_PO_AG - f_PO_LM
+    
+  #Equation 7
+    dLMWC = forc_npp(step.num) * (1. - parameters$param_pi) - f_LM_leach + f_PO_LM - f_LM_MA - f_LM_MB + f_MB_turn * (1. - parameters$param_pb) + f_MA_LM
+  
+  #Equation 17
+    dAGG = f_MA_AG + f_PO_AG - f_AG_break
+    
+  #Equation 20
+    dMIC = f_LM_MB - f_MB_turn - f_MB_atm
+  
+  #Equation 19
+    dMAOM = f_LM_MA - f_MA_LM + f_MB_turn * parameters$param_pb - f_MA_AG + f_AG_break * (1. - parameters$param_pa)
+  
+  #Equation 23
+    dOUT = f_MB_atm
+    
+  #Important output fluxes
+    dOUTPOM = f_PO_AG + f_PO_LM
+    dOUTLMWC = f_LM_leach + f_LM_MA + f_LM_MB
+    dOUTAGG = f_AG_break
+    dOUTMAOM = f_MA_LM + f_MA_AG 
+    dOUTMIC =  f_MB_turn + f_MB_atm
+
+              return(list(c(dPOM, dLMWC, dAGG, dMIC, dMAOM, dOUT, dOUTPOM, dOUTLMWC, dOUTAGG, dOUTMAOM, dOUTMIC)))
+        })
+    }
+
+#Define initial states
+    state.V2.5pool.MMRMM <- c(SS.V2.5pool.MMRMM$y, OUT = 0, OUTPOM = 0, OUTLMWC = 0, OUTAGG = 0, OUTMAOM = 0, OUTMIC = 0)
+
+#Function that runs the model dynamically and outputs respiration and other useful output fluxes
+Model.V2.5pool.MMRMM <- function (parameters, times=run.steps) {
+    output <- ode(y = state.V2.5pool.MMRMM, times=run.steps, func=derivs.V2.5pool.MMRMM.resp, parms = parameters, method="rk4") #solve ode, return output
+      return(as.data.frame(cbind(
+      time = output[run.steps.minus.one,"time"],
+      POM = output[run.steps.minus.one,"POM"], 
+      LMWC = output[run.steps.minus.one,"LMWC"], 
+      AGG = output[run.steps.minus.one,"AGG"], 
+      MIC = output[run.steps.minus.one,"MIC"], 
+      MAOM = output[run.steps.minus.one,"MAOM"], 
+      OUT = diff(output[run.steps,"OUT"]), 
+      OUTPOM = diff(output[run.steps,"OUTPOM"]), 
+      OUTLMWC = diff(output[run.steps,"OUTLMWC"]), 
+      OUTAGG = diff(output[run.steps,"OUTAGG"]), 
+      OUTMIC = diff(output[run.steps,"OUTMIC"]), 
+      OUTMAOM = diff(output[run.steps,"OUTMAOM"])                                 )))
+}
+```
+
+####Calculate turnover time using default inputs
+```{r}
+#Runs the model once using default inputs
+#Initialize output and define parameters
+out <- NULL
+pars <- parameters[[3]]
+
+#Read in best parameters
+ outtab <- read.csv(file= paste0(figdir,model.name,"_all_table.csv"))
+ Fit.pools <- as.vector(outtab$FitPars)
+ names(Fit.pools) <- outtab$X
+ pars[names(Fit.pools)] <- Fit.pools
+
+ #Other default inputs
+    pars$param_qmax <-  1 * 1000 * 0.86 * 80  
+    pars$param_pH <- 7
+
+#Run model
+start_spintime = Sys.time()
+spin <- Model.V2.5pool.MMRMM(pars)
+end_spintime = Sys.time()
+spintime = end_spintime - start_spintime
+print(spintime)
+spin$SOM <- spin$POM + spin$LMWC + spin$AGG + spin$MIC + spin$MAOM
+
+out <- spin[(end.spin+1):(length(run.steps)-1),]
+
+#Calculate the turnover time in years
+out$turnover <- out$OUT/out$SOM
+summary(1/out$turnover/365)
+MRT_years <- 1/out$turnover/365
+```
+
+####Calculate turnover time at each site
+```{r}
+#Calculate the turnover time for each site in the dataset
+if(do_MRT_sites == 1){
+MRT_summary <- matrix(nrow=dim(inputs)[1], ncol=6)
+MRT_mean <- vector(length=dim(inputs)[1])
+for (i in 1:dim(inputs)[1]){
+  
+#Define inputs
+    forc_st <- approxfun(run.steps, rep(inputs[i,1],length(run.steps))) 
+    forc_sw <- approxfun(run.steps, rep(inputs[i,2],length(run.steps)))
+    forc_npp <- approxfun(run.steps,rep(inputs[i,3],length(run.steps))) 
+    pars$param_qmax <- inputs[i,4]
+    pars$param_pH <- inputs[i,5]
+    
+#Run model at each site and calculate MRT
+    start_spintime = Sys.time()
+spin <- Model.V2.5pool.MMRMM(pars)
+end_spintime = Sys.time()
+spintime = end_spintime - start_spintime
+print(spintime)
+spin$SOM <- spin$POM + spin$LMWC + spin$AGG + spin$MIC + spin$MAOM
+
+out <- spin[(end.spin+1):(length(run.steps)-1),]
+MRT_years <- out$SOM/out$OUT/365
+MRT_summary[i,] <- summary(MRT_years)
+MRT_mean[i] <- mean(MRT_years)
+}
+
+save(MRT_mean, MRT_summary, file=paste0("MRT_all.Rdata"))
+}
+```
+
+##Reset runtime for Century
+```{r}
+#We reset the runtime with the same spin up
+num.spin = 99
+end.spin = dim(inputdata)[1]*(num.spin)
+run.steps <- 1:(dim(inputdata)[1]*(num.spin+1))
+run.steps.minus.one <- run.steps[1:length(run.steps)-1]
+
+#Set dynamic input functions
+    forc_st <- approxfun(run.steps, rep(inputdata$forc_st,(num.spin+1)))
+    forc_sw <- approxfun(run.steps, rep(inputdata$forc_sw,(num.spin+1)))
+    forc_npp <- approxfun(run.steps,rep(inputdata$forc_npp,(num.spin+1)))
+```
+
+###Century with respiration
+```{r}
+#These equations include respiration as an output, which we need to estimate a turnover time
+derivs.Century.resp <- function(step.num,state,parameters) {
+  with(as.list(c(state,parameters)), {
+
+#Equation B1
+  t_scalar <- (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 * (forc_st(step.num) - parameters$t1))) /
+    (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 *(30.0 - parameters$t1)))
+
+#Equation B2
+  w_scalar <- 1.0 / (1.0 + parameters$w1 * exp(-parameters$w2 * forc_sw(step.num)/0.39))
+
+#Equation B3
+  f_TEX = parameters$c1 - parameters$c2*0.8
+  
+#Equation B4
+  f_StrLitter = StrLitter * parameters$k_strlitter * t_scalar * w_scalar * exp(-3*parameters$LigFrac)
+  
+#Equation B5
+  f_MetLitter = MetLitter * parameters$k_metlitter * t_scalar * w_scalar  
+  
+#Equation B6
+  f_ACTIVE <- ACTIVE * parameters$k_active * t_scalar * w_scalar * f_TEX
+    
+#Equation B7
+  f_SLOW <- SLOW * parameters$k_slow * t_scalar * w_scalar
+
+#Equation B8
+  f_PASSIVE <- PASSIVE * parameters$k_passive * t_scalar * w_scalar
+  
+#Equation B9
+  dStrLitter = parameters$input_to_strlitter * forc_npp(step.num) - f_StrLitter
+  
+#Equation B10
+  dMetLitter = (1-parameters$input_to_strlitter) * forc_npp(step.num) - f_MetLitter
+  
+#Equation B11
+  dACTIVE <- (1-parameters$LigFrac) * parameters$strlitter_to_active * f_StrLitter + parameters$metlitter_to_active * f_MetLitter  + f_SLOW * parameters$slow_to_active + f_PASSIVE * parameters$passive_to_active - f_ACTIVE
+
+#Equation B12
+  dSLOW <-  parameters$LigFrac * parameters$strlitter_to_slow * f_StrLitter + f_ACTIVE * (1-f_TEX-parameters$active_to_passive) - f_SLOW
+  dPASSIVE <- f_ACTIVE * parameters$active_to_passive + f_SLOW * parameters$slow_to_passive - f_PASSIVE
+
+#Equation B13  
+  dOUT <- f_ACTIVE * f_TEX + f_SLOW * (1 - parameters$slow_to_active - parameters$slow_to_passive) + f_PASSIVE * (1 - parameters$passive_to_active)
+  
+    return(list(c(dStrLitter, dMetLitter, dACTIVE, dSLOW, dPASSIVE, dOUT)))
+  })
+}
+
+#Define initial states
+state.Century = c(SS.Century$y, OUT=0)
+
+Model.Century <- function (parameters, times=run.steps) {
+    output <- ode(y = state.Century, times=run.steps, func=derivs.Century.resp, parms = parameters, method="rk4") #solve ode, return output
+      return(as.data.frame(cbind(time = output[run.steps.minus.one,"time"], StrLitter = output[run.steps.minus.one,"StrLitter"], MetLitter = output[run.steps.minus.one,"MetLitter"], ACTIVE = output[run.steps.minus.one,"ACTIVE"], SLOW = output[run.steps.minus.one,"SLOW"], PASSIVE = output[run.steps.minus.one,"PASSIVE"], OUT = diff(output[run.steps,"OUT"]))))
+}
+```
+
+####Caclulate turnover time using default inputs
+```{r}
+#Runs the model once using default inputs
+#Initialize output and define parameters
+out <- NULL
+pars <- parameters[[5]]
+
+#Read in best parameters
+ outtab <- read.csv(file= paste0(figdir,model.name,"_all_table.csv"))
+ Fit.pools <- as.vector(outtab$FitPars)
+ names(Fit.pools) <- outtab$X
+ pars[names(Fit.pools)] <- Fit.pools
+
+#Run model
+start_spintime = Sys.time()
+spin <- Model.Century(pars)
+end_spintime = Sys.time()
+spintime = end_spintime - start_spintime
+print(spintime)
+spin$SOM <- spin$ACTIVE + spin$SLOW + spin$PASSIVE
+
+out <- spin[(end.spin+1):(length(run.steps)-1),]
+
+#Calculate the turnover time in years
+out$turnover <- out$OUT/out$SOM
+summary(1/out$turnover/365) #yr-1
+MRT_years <- 1/out$turnover/365
+```
+
+####Calculate turnover time at each site
+```{r}
+#Calculate the turnover time for each site in the dataset
+if(do_MRT_sites == 1){
+MRT_summary <- matrix(nrow=dim(inputs)[1], ncol=6)
+MRT_mean <- vector(length=dim(inputs)[1])
+for (i in 1:dim(inputs)[1]){
+  
+#Define inputs
+    forc_st <- approxfun(run.steps, rep(inputs[i,1],length(run.steps)))
+    forc_sw <- approxfun(run.steps, rep(inputs[i,2],length(run.steps)))
+    forc_npp <- approxfun(run.steps,rep(inputs[i,3],length(run.steps)))
+
+#Run model at each site and calculate MRT
+start_spintime = Sys.time()
+spin <- Model.Century(pars)
+end_spintime = Sys.time()
+spintime = end_spintime - start_spintime
+print(spintime)
+spin$SOM <- spin$ACTIVE + spin$SLOW + spin$PASSIVE
+
+out <- spin[(end.spin+1):(length(run.steps)-1),]
+MRT_years <- out$SOM/out$OUT/365
+MRT_summary[i,] <- summary(MRT_years)
+MRT_mean[i] <- mean(MRT_years)
+}
+
+save(MRT_mean, MRT_summary, file=paste0("MRTCentury_all.Rdata"))
+}
+```
+
+#Machine Learning Null Model
+```{r}
+if(do_explore_bias == 1){
+
+#Prepare dataset of model inputs and observed SOM
+mldfSOM.sdf <- sdf %>% dplyr::select(NPP.gC.m2.d, SoilMoi_m3m3, SoilTMP_C, ClaySilt, pH_CaCl2, SOM)
+names(mldfSOM.sdf) <- c("NPP.gC.m2.d", "SoilMoi_m3m3", "SoilTMP_C", "ClaySilt", "pH_CaCl2", "Cpool")
+
+mldfSOM.vf <- vf %>% dplyr::select(NPP.gC.m2.d, SoilMoi_m3m3, SoilTMP_C, ClaySilt, pH_CaCl2, SOM)
+names(mldfSOM.vf) <- c("NPP.gC.m2.d", "SoilMoi_m3m3", "SoilTMP_C", "ClaySilt", "pH_CaCl2", "Cpool")
+
+mldfSOM.kf <- kf %>% dplyr::select(NPP.gC.m2.d, SoilMoi_m3m3, SoilTMP_C, ClaySilt, pH_CaCl2, SOM)
+names(mldfSOM.kf) <- c("NPP.gC.m2.d", "SoilMoi_m3m3", "SoilTMP_C", "ClaySilt", "pH_CaCl2", "Cpool")
+mldfSOM.kf <- mldfSOM.kf[complete.cases(mldfSOM.kf), ]
+
+mldfSOM.all <- alldf %>% dplyr::select(NPP.gC.m2.d, SoilMoi_m3m3, SoilTMP_C, ClaySilt, pH_CaCl2, SOM)
+names(mldfSOM.all) <- c("NPP.gC.m2.d", "SoilMoi_m3m3", "SoilTMP_C", "ClaySilt", "pH_CaCl2", "Cpool")
+mldfSOM.all <- mldfSOM.all[complete.cases(mldfSOM.all), ]
+
+#Function that partitions data into training and testing, returning the training dataset
+train_ML <- function(mldf){
+set.seed(1234)
+trainIndex <- createDataPartition(mldf$Cpool, p = 0.8, list = FALSE, times = 1)
+mldfTrain <- mldf[trainIndex,]
+mldfTest <- mldf[-trainIndex,]  
+return(mldfTrain)
+}
+
+#Function that partitions data into training and testing, returning the testing dataset
+test_ML <- function(mldf){
+set.seed(1234)
+trainIndex <- createDataPartition(mldf$Cpool, p = 0.8, list = FALSE, times = 1)
+mldfTrain <- mldf[trainIndex,]
+mldfTest <- mldf[-trainIndex,]  
+return(mldfTest)
+}
+
+#Function that trains the machine learning model with 10-fold repeated cross-validation, using a gradient-boosting method: https://cran.r-project.org/web/packages/gbm/vignettes/gbm.pdf
+do_ML <- function(mldfTrain){
+fitControl <- trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 10 )
+set.seed(1234)
+gbmFit1 <- train( Cpool ~ ., data = mldfTrain,
+                    method = "gbm",
+                    trControl = fitControl,
+                    verbose = FALSE )
+return(gbmFit1)
+}
+
+#Summarizes model perfomrance for the ML models
+TrainSOM.sdf <- train_ML(mldfSOM.sdf)
+gbmSOM.sdf <- do_ML(TrainSOM.sdf)
+summary(lm(TrainSOM.sdf$Cpool~predict(gbmSOM.sdf)))
+TestSOM.sdf <- test_ML(mldfSOM.sdf)
+gbmSOM.sdf
+summary(gbmSOM.sdf)
+
+TrainSOM.vf <- train_ML(mldfSOM.vf)
+gbmSOM.vf <- do_ML(TrainSOM.vf)
+summary(lm(TrainSOM.vf$Cpool~predict(gbmSOM.vf)))
+TestSOM.vf <- test_ML(mldfSOM.vf)
+gbmSOM.vf
+summary(gbmSOM.vf)
+
+TrainSOM.kf <- train_ML(mldfSOM.kf)
+gbmSOM.kf <- do_ML(TrainSOM.kf)
+summary(lm(TrainSOM.kf$Cpool~predict(gbmSOM.kf)))
+TestSOM.kf <- test_ML(mldfSOM.kf)
+gbmSOM.kf
+summary(gbmSOM.kf)
+
+TrainSOM.all <- train_ML(mldfSOM.all)
+gbmSOM.all <- do_ML(TrainSOM.all)
+summary(lm(TrainSOM.all$Cpool~predict(gbmSOM.all)))
+TestSOM.all <- test_ML(mldfSOM.all)
+gbmSOM.all
+summary(gbmSOM.all)
+
+#Partition just the input data
+sdfselect <- mldfSOM.sdf[,c("NPP.gC.m2.d", "SoilMoi_m3m3", "SoilTMP_C", "ClaySilt", "pH_CaCl2")]
+vfselect <- mldfSOM.vf[,c("NPP.gC.m2.d", "SoilMoi_m3m3", "SoilTMP_C", "ClaySilt", "pH_CaCl2")]
+kfselect <- mldfSOM.kf[,c("NPP.gC.m2.d", "SoilMoi_m3m3", "SoilTMP_C", "ClaySilt", "pH_CaCl2")]
+
+#Test if null models can predict other datasets
+summary(lm(mldfSOM.sdf$Cpool~predict(gbmSOM.vf, newdata = sdfselect)))
+summary(lm(mldfSOM.kf$Cpool~predict(gbmSOM.vf, newdata = kfselect))) 
+summary(lm(mldfSOM.vf$Cpool~predict(gbmSOM.sdf, newdata = vfselect))) 
+summary(lm(mldfSOM.kf$Cpool~predict(gbmSOM.sdf, newdata = kfselect))) 
+summary(lm(mldfSOM.sdf$Cpool~predict(gbmSOM.kf, newdata = sdfselect)))
+summary(lm(mldfSOM.vf$Cpool~predict(gbmSOM.kf, newdata = vfselect)))
+
+#Plot model performance - training dataset
+ymax_plot <- 30
+ylab.ml <- expression("Predicted C stock (kg C " ~ m^{2} ~ ")")
+xlab.ml <- expression("Observed C stock (kg C " ~ m^{2} ~ ")")
+pdf(file=paste0(figdir,paste0("FigureS_MLIN.pdf")), height=5, width=5)
+par(mfrow = c(2,2))
+par(mar = c(3.5,3.7,0,0.1)+.9)
+par(oma = c(0,0,0,0))
+plot(TrainSOM.all$Cpool/1000, predict(gbmSOM.all)/1000, xlab = xlab.ml, ylab = ylab.ml, lwd = 2, type = "p", col = cbPalette[1], ylim=c(0,ymax_plot), xlim=c(0,ymax_plot), main="All")
+abline(0,1,lty=2)
+
+plot(TrainSOM.vf$Cpool/1000, predict(gbmSOM.vf)/1000, xlab = xlab.ml, ylab = ylab.ml, lwd = 2, type = "p", col = cbPalette[2], ylim=c(0,ymax_plot), xlim=c(0,ymax_plot), main="Viscarra Rossel")
+abline(0,1,lty=2)
+
+plot(TrainSOM.kf$Cpool/1000, predict(gbmSOM.kf)/1000, xlab = xlab.ml, ylab = ylab.ml, lwd = 2, type = "p", col = cbPalette[6], ylim=c(0,ymax_plot), xlim=c(0,ymax_plot), main="Georgiou")
+abline(0,1,lty=2)
+
+plot(TrainSOM.sdf$Cpool/1000, predict(gbmSOM.sdf)/1000, xlab = xlab.ml, ylab = ylab.ml, lwd = 2, type = "p", col = cbPalette[7], ylim=c(0,ymax_plot), xlim=c(0,ymax_plot), main="LUCAS")
+abline(0,1,lty=2)
+dev.off()
+
+#Plot model performance - testing dataset
+pdf(file=paste0(figdir,paste0("FigureS_MLOUT.pdf")), height=5, width=5)
+par(mfrow = c(2,2))
+par(mar = c(3.5,3.7,0,0.1)+.9)
+par(oma = c(0,0,0,0))
+plot(TestSOM.all$Cpool/1000, predict(gbmSOM.all, newdata=TestSOM.all)/1000, xlab = xlab.ml, ylab = ylab.ml, lwd = 2, type = "p", col = cbPalette[1], ylim=c(0,ymax_plot), xlim=c(0,ymax_plot), main="All")
+abline(0,1,lty=2)
+
+plot(TestSOM.vf$Cpool/1000, predict(gbmSOM.vf, newdata=TestSOM.vf)/1000, xlab = xlab.ml, ylab = ylab.ml, lwd = 2, type = "p", col = cbPalette[2], ylim=c(0,ymax_plot), xlim=c(0,ymax_plot), main="Viscarra Rossel")
+abline(0,1,lty=2)
+
+plot(TestSOM.kf$Cpool/1000, predict(gbmSOM.kf, newdata=TestSOM.kf)/1000, xlab = xlab.ml, ylab = ylab.ml, lwd = 2, type = "p", col = cbPalette[6], ylim=c(0,ymax_plot), xlim=c(0,ymax_plot), main="Georgiou")
+abline(0,1,lty=2)
+
+plot(TestSOM.sdf$Cpool/1000, predict(gbmSOM.sdf, newdata=TestSOM.sdf)/1000, xlab = xlab.ml, ylab = ylab.ml, lwd = 2, type = "p", col = cbPalette[7], ylim=c(0,ymax_plot), xlim=c(0,ymax_plot), main="LUCAS")
+abline(0,1,lty=2)
+dev.off()
+
+pdf(file=paste0(figdir,paste0("FigureS_VARIMPALL.pdf")), height=5, width=5)
+summary(gbmSOM.all)
+dev.off()
+}
+```
+
+#Testing whether Millennial V2 can predict one dataset when fit to another
+```{r}
+#Load fitted parameters for current dataset (chosen using testDat in Switches)
+load(file=paste0(codedir,"V2.5pool.MMRMM_",testDat,".Rdata"))
+
+outtab <- read.csv(file= paste0(figdir,"V2.5pool.MMRMM_",testDat,"_table.csv"))
+Fit.pools <- as.vector(outtab$FitPars)
+names(Fit.pools) <- outtab$X
+
+pars <- parameters[[3]]
+pars[names(Fit.pools)] <- Fit.pools
+
+#Organize inputs
+inputs.all <- cbind(alldf$SoilTMP_C, alldf$SoilMoi_m3m3, alldf$NPP.gC.m2.d, alldf$qmax.gC.m2, alldf$pH_CaCl2, alldf$BD_all*1000,alldf$depth_all)
+inputs.all <- inputs.all[!is.na(alldf$SOM),]
+
+#Define initial states and parameters
+    state <- c(POM = 1, LMWC = 1, AGG = 1, MIC = 1, MAOM=1)
+    state.SS <- matrix(nrow=dim(inputs.all)[1], ncol=5)
+    parameters.in <- as.list(pars)
+    
+#Defines function that runs the model at all sites using the fitted parameters for the currently loaded dataset
+    SS.Model.pools.all <- function(parsin, inputs) {
+      for(i in 1:dim(inputs)[1]){
+        tryCatch({
+          parsin$forc_st <- inputs[i,1]
+          parsin$forc_sw <- inputs[i,2]
+          parsin$forc_npp <- inputs[i,3]
+          parsin$param_qmax <- inputs[i,4]
+          parsin$param_pH <- inputs[i,5]
+          parsin$param_bulkd <- inputs[i,6]
+          parsin$param_depth <- inputs[i,7]
+          state.SS[i,] <- stode(y = state, time = SStime, func = derivs.V2.5pool.MMRMM, parms = parsin, positive=TRUE)$y
+        }, error=function(e){})
+      }
+          modeled.pools <- as.data.frame(cbind(1:dim(inputs)[1], state.SS, rowSums(state.SS),(state.SS[,1]+state.SS[,2]+state.SS[,3]+state.SS[,4])))
+          names(modeled.pools) <- c("site","POM","LMWC","AGG","MIC","MAOM","SOM","POM.AGG")
+      return(modeled.pools)
+    }
+
+#Executes function
+optim.all <- SS.Model.pools.all(parameters.in, inputs.all)
+names(optim.all) <- c("site","POM.optim","LMWC.optim","AGG.optim","MIC.optim","MAOM.optim","SOM.optim","POM.AGG.optim")
+
+#Organizes output
+alldf.all <- alldf[!is.na(alldf$SOM),]
+best.all <- cbind(optim.all, alldf.all)
+
+#Calculates whether the model fitted using testDat data can predict the other datasets well
+testDats <- c("Viscarra-Rossel", "Georgiou", "LUCAS")
+for (i in 1:length(testDats)){
+dim.SOM <- dim(best.all[best.all$Dataset==testDats[i],])[1]
+Obs.SOM <- best.all[best.all$Dataset==testDats[i],]$SOM
+optim.SOM <- best.all[best.all$Dataset==testDats[i],]$SOM.optim
+fit.SOM <- summary(lm(Obs.SOM ~ optim.SOM))
+SOM.bias <- optim.SOM/1000 - Obs.SOM/1000
+RMSE_kg <- sqrt(sum((Obs.SOM/1000- optim.SOM/1000)^2, na.rm=T)/dim(Obs.pools)[1])
+AIC <- dim.SOM * log(sum((Obs.SOM/1000- optim.SOM/1000)^2, na.rm=T)/dim.SOM) + 2*length(parameters[[3]])
+MBE_SOM <- mean(SOM.bias, na.rm=T)
+MAE_SOM <- mean(abs(SOM.bias), na.rm=T)
+print(list(RMSE_kg = RMSE_kg,AIC = AIC, MAE_SOM = MAE_SOM, MBE_SOM = MBE_SOM, fit.SOM= fit.SOM))
+}
+```
+
+#Figures and analyses using all datasets together
+##Load model fits and do data prep
+```{r}
+model.names <- c("V2.5pool.MMRMM","Century")
+testDats <- c("all","Viscarra-Rossel","Georgiou","LUCAS")
+
+#Load and organize dataframes
+results.df <- NULL
+temp.df <- NULL
+for(i in 1:length(model.names)){
+ for(j in 1:length(testDats)){
+  if (i==1 & j==1){
+    load(file=paste0(model.names[1],"_",testDats[1],".Rdata"))
+    optim.pools$site <- Obs.pools$site
+    results.df <- as.data.frame(cbind(optim.pools, Source="Optimized"))
+    results.df <- results.df %>% dplyr::full_join(cbind(Obs.pools, Source="Observed")) %>% tibble::add_column(Dataset = testDats[1], Model = model.names[1])
+  }else{
+    load(file=paste0(model.names[i],"_",testDats[j],".Rdata"))
+    optim.pools$site <- Obs.pools$site
+    temp.df <- as.data.frame(cbind(optim.pools, Source="Optimized"))
+    temp.df <- temp.df %>% dplyr::full_join(cbind(Obs.pools, Source="Observed")) %>% tibble::add_column(Dataset = testDats[j], Model = model.names[i])
+    results.df <- results.df %>% dplyr::full_join(temp.df)
+  }
+ }
+}
+
+#Convert units of SOC pools
+results.df <- results.df %>% dplyr::mutate(POM_kg = POM/1000, LMWC_kg = LMWC/1000, AGG_kg = AGG/1000, MIC_kg = MIC/1000, MAOM_kg = MAOM/1000, SOM_kg = SOM/1000, POM.AGG_kg = POM.AGG/1000, StrLitter_kg = StrLitter/1000, MetLitter_kg = MetLitter/1000, ACTIVE_kg = ACTIVE/1000, SLOW_kg = SLOW/1000, PASSIVE_kg = PASSIVE/1000) %>% dplyr::select(-c(POM:POM.AGG,StrLitter:PASSIVE))
+
+#Recalculating POM.AGG - identical values for VR and LUCAS datasets, but now estimates POM.AGG for the KG dataset by subtraction
+results.df$POM.AGG_kg <- results.df$SOM_kg - results.df$MAOM_kg
+
+#Organize columns for easier plotting with ggplot
+plot.df <- results.df %>% tidyr::pivot_longer(POM_kg:PASSIVE_kg, names_to="Pool", values_to = "C_pool") %>% dplyr::select(c( "site", "Source", "Dataset", "Model", "Pool", "C_pool")) %>%  tidyr::pivot_wider(names_from="Source", values_from ="C_pool")
+plot.df$Dataset <- factor(plot.df$Dataset, levels=c("all","Viscarra-Rossel","Georgiou","LUCAS"), labels=c("All","Viscarra Rossel","Georgiou","LUCAS")) 
+
+#Add facet label names for plotting
+model.labs <- c("Century", "Millennial V2") 
+names(model.labs) <- c("Century", "V2.5pool.MMRMM")
+
+source.labs <- c("Observed", "Century", "Millennial V2") 
+names(source.labs) <- c("Observed", "Century", "V2.5pool.MMRMM")
+
+#Dataframe for plotting SOM fractions
+plot.som.df <- plot.df[plot.df$Pool == "SOM_kg" | plot.df$Pool == "MAOM_kg",]
+
+#Dataframe for plotting SOM by biome categories
+biome.char <- as.data.frame(cbind(1:14, c("Tropical and Subtropical Moist Broadleaf Forests", "Tropical and Subtropical Dry Broadleaf Forests", "Tropical and Subtropical Coniferous Forests", "Temperate Broadleaf and Mixed Forests", "Temperate Coniferous Forests", "Boreal Forests/Taiga", "Tropical and Subtropical Grasslands, Savannas, and Shrublands", "Temperate Grasslands, Savannas, and Shrublands", "Flooded Grasslands and Savannas", "Montane Grasslands and Savannas", "Tundra", "Mediterranean Forests, Woodlands, and Scrub", "Deserts and Xeric Shrublands", "Mangroves"), c("Trop Moist BF", "Trop Dry BF", "Trop CF", "Temp BMF", "Temp CF", "Boreal F", "Trop Grass", "Temp Grasslands", "Flooded", "Montane", "Tundra", "Mediterranean", "Deserts", "Mangroves")))
+names(biome.char) <- c("Biome","Biome.Description","Biome.Short")
+alldf$Biome <- as.factor(alldf$Biome)
+longdf1 <- alldf
+longdf2 <- longdf1
+longdf2$Dataset <- rep("all")
+fulldf <- rbind(longdf1, longdf2)
+fulldf$site <- c(1:dim(fulldf[fulldf$Dataset=="Viscarra-Rossel",])[1], 1:dim(fulldf[fulldf$Dataset=="LUCAS",])[1], 1:dim(fulldf[fulldf$Dataset=="Georgiou",])[1], 1:dim(fulldf[fulldf$Dataset=="all",])[1])
+
+#Prepare LUCAS land use type labels
+LU.char <- as.data.frame(cbind(c("C10","C30","C20","E20","E10","E30"), c("Broadleaved","Mixed forest","Coniferous","Pure grass","Mixed grass","Re-vegetated")))
+names(LU.char) <- c("LU","LU.Description")
+
+#Create a new column called Source that identifies values as either Observed, modeled by Century, or modeled by Millennial V2, for plotting
+results.df[results.df$Source == "Optimized",]$Source <- results.df[results.df$Source == "Optimized",]$Model
+results.df$Source <- factor(results.df$Source, levels = c("Observed", "Century", "V2.5pool.MMRMM"))
+results.df <- results.df[!(results.df$Source == "Observed" & results.df$Model == "Century"),]
+
+#Organize data frames with biome and LU labels
+plot.all <- fulldf %>% dplyr::left_join(biome.char, by="Biome") %>% dplyr::full_join(results.df) %>% dplyr::left_join(LU.char)
+plot.all$Biome.Short <- factor(plot.all$Biome.Short, levels = c("Boreal F", "Temp CF", "Temp BMF", "Montane", "Temp Grasslands", "Mediterranean", "Deserts", "Trop Moist BF", "Trop Grass", "Flooded", "Tundra", "Mangroves", "Trop Dry BF", "Trop CF"))
+plot.all$LU.Description <- factor(plot.all$LU.Description,levels = c("Pure grass","Broadleaved","Mixed Forest","Coniferous","Mixed grass","Re-vegetated"))
+
+plot.all$Dataset <- factor(plot.all$Dataset, levels=c("all","Viscarra-Rossel","Georgiou","LUCAS"), labels=c("All","Viscarra Rossel","Georgiou","LUCAS"))
+
+plot.fractions.df <- plot.all %>% dplyr::select(c( "site", "Source", "Dataset", "MAOM_kg", "POM.AGG_kg", "Biome.Short")) %>% tidyr::pivot_longer(MAOM_kg:POM.AGG_kg, names_to="Pool", values_to = "C_pool") 
+
+plot.LU.df <- plot.all %>% dplyr::select(c( "site", "Source", "Dataset", "SOM_kg", "MAOM_kg", "POM.AGG_kg","LU.Description")) %>% tidyr::pivot_longer(SOM_kg:POM.AGG_kg, names_to="Pool", values_to = "C_pool") 
+pool.labs <- c("MAOM", "Non-MAOM", "SOC") 
+names(pool.labs) <- c("MAOM_kg", "POM.AGG_kg", "SOM_kg")
+```
+
+##Make model fit and biome plots
+```{r}
+max.som <- 30
+#Plot model fit to data - Figure 4 in Abramoff et al (2021)
+pdf(file=paste0(figdir,"Figure4.pdf"), height=2.75, width=6)
+ggplot(plot.som.df, aes(x = Observed, y = Optimized, col = Pool)) +
+  geom_point(alpha = 0.5, size = 0.5) +
+  geom_abline(slope=1, intercept=0, linetype = "dashed") +
+  xlim(0,max.som) + ylim(0,max.som) +
+  facet_grid(Model ~ Dataset, labeller = labeller(Model = model.labs)) +
+  xlab(expression("Modeled C stock (kgC " ~ m^{-2} ~ ")")) +
+  ylab(expression("Observed C stock (kgC " ~ m^{-2} ~ ")")) +
+  theme_classic() +
+  scale_color_manual(values = c(cbPalette[2], cbPalette[4]), name="Pool", labels =c("MAOM","SOC")) + guides(colour = guide_legend(override.aes = list(size=5)))
+dev.off()
+
+#Divide dataframe to either include all data or each dataset separately
+plot.all.all <- plot.all[plot.all$Dataset == "All",]
+plot.all.dats <- plot.all[plot.all$Dataset != "All",]
+
+#Plot SOM in each biome category - Figure 7 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"Figure7.pdf"), height=4, width=5.5)
+ggplot(plot.all.all, aes(x=Biome.Short, y=SOM_kg, fill=Source)) + geom_boxplot() +
+  scale_fill_manual(values = c(cbPalette[3], cbPalette[5], cbPalette[6]), name="", labels =c("Observed","Century","Millennial V2")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("C stock (kg C" ~ m^{-2} ~ ")")) +
+  xlab("") + stat_n_text(size = 2)
+dev.off()
+
+#Plot SOM in each biome category - Figure S8 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"FigureS8.pdf"), height=5, width=8)
+ggplot(plot.all.dats, aes(x=Biome.Short, y=SOM_kg, fill=Source)) + geom_boxplot() +
+  facet_wrap(~Dataset, nrow=2) +
+  scale_fill_manual(values = c(cbPalette[3], cbPalette[5], cbPalette[6]), name="", labels =c("Observed","Century","Millennial V2")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("C stock (kg C" ~ m^{-2} ~ ")")) +
+  xlab("") + stat_n_text(size = 2)
+dev.off()
+
+#Divide dataframe to either include all data or each dataset separately
+plot.fractions.df.all <- plot.fractions.df[plot.fractions.df$Dataset == "All",]
+plot.fractions.df.dats <- plot.fractions.df[plot.fractions.df$Dataset != "All",]
+
+#Plot C in each fraction by biome - Figure 8 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"Figure8.pdf"), height=5, width=5.5)
+ggplot(plot.fractions.df.all, aes(x=Biome.Short, y=C_pool, fill=Source)) + geom_boxplot() +
+  facet_grid(Pool ~ ., labeller = labeller(Pool = pool.labs), scales="free") +
+  scale_fill_manual(values = c(cbPalette[3], cbPalette[6]), name="", labels =c("Observed","Millennial V2")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("C stock (kg C" ~ m^{-2} ~ ")")) +
+  xlab("")
+dev.off()
+
+#Plot C in each fraction by biome - Figure S9 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"FigureS9.pdf"), height=5, width=11)
+ggplot(plot.fractions.df.dats, aes(x=Biome.Short, y=C_pool, fill=Source)) + geom_boxplot() +
+  facet_grid(Pool ~ Dataset, labeller = labeller(Pool = pool.labs), scales="free") +
+  scale_fill_manual(values = c(cbPalette[3], cbPalette[6]), name="", labels =c("Observed","Millennial V2")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("C stock (kg C" ~ m^{-2} ~ ")")) +
+  xlab("")
+dev.off()
+
+plot.LUCAS <- plot.LU.df[plot.LU.df$Dataset=="LUCAS" & !is.na(plot.LU.df$LU.Description),]
+
+#Plot C by LU in LUCAS - Figure S13 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"FigureS13.pdf"), height=5, width=6)
+ggplot(plot.LUCAS, aes(x=LU.Description, y=C_pool, fill=Source)) + geom_boxplot() +
+  facet_wrap(~Pool, scales="free", labeller = labeller(Pool = pool.labs), nrow = 2) +
+  scale_fill_manual(values = c(cbPalette[3], cbPalette[5], cbPalette[6]), name="", labels =c("Observed","Century","Millennial V2")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("C stock (kg C" ~ m^{-2} ~ ")")) +
+  xlab("")
+dev.off()
+
+#Plot relationship between SOC and NPP - Figure 10 in Abramoff et al. (2021)
+plot.npp <- plot.all[!is.na(plot.all$Source),]
+pdf(file=paste0(figdir,"FigureS10.pdf"), height=4, width=6)
+ggplot(plot.npp, aes(x = NPP.gC.m2.d, y = SOM_kg)) +
+  geom_point(alpha = 0.5, size = 0.5) +
+  facet_grid(Source ~ Dataset, labeller = labeller(Source = source.labs)) +
+  ylab(expression("C stock (kgC " ~ m^{-2} ~ ")")) +
+  xlab(expression("NPP (g C " ~ m^{-2} ~ d^{-1} ~")")) +
+  theme_classic() + guides(colour = guide_legend(override.aes = list(size=5)))
+dev.off()
+
+#Make boxplots of bias for biome plots
+plot.all.bias <- plot.all %>% dplyr::select(c("site", "Source", "Dataset", "SOM_kg", "Biome.Short")) %>% tidyr::pivot_wider(names_from="Source", values_from ="SOM_kg") %>% 
+  dplyr::mutate(Century_bias = Observed-Century, V2_bias = Observed-V2.5pool.MMRMM) %>%
+dplyr::select(c("site", "Dataset","Century_bias", "V2_bias", "Biome.Short")) %>%
+  tidyr::pivot_longer(Century_bias:V2_bias, names_to = "Model_Bias")
+  
+#Model bias by biome - Figure S6 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"FigureS6.pdf"), height=6, width=8)
+ggplot(plot.all.bias, aes(x=Biome.Short, y=value, fill=Model_Bias)) + geom_boxplot() +
+  facet_wrap(~Dataset, nrow=2) +
+  scale_fill_manual(values = c(cbPalette[5], cbPalette[6]), name="", labels =c("Century","Millennial V2")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("C stock bias (kg C" ~ m^{-2} ~ ")")) +
+  xlab("") + stat_n_text(size = 2) +
+  geom_hline(yintercept = 0, linetype='dotted')
+dev.off()
+
+plot.fractions.bias <- plot.fractions.df %>% tidyr::pivot_wider(names_from="Source", values_from ="C_pool") %>% 
+  dplyr::mutate(V2_bias = Observed-V2.5pool.MMRMM) 
+
+#Model bias for each fraction by biome - Figure S7 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"FigureS7.pdf"), height=6, width=8)
+ggplot(plot.fractions.bias, aes(x=Biome.Short, y=V2_bias, fill=Pool)) + geom_boxplot() +
+  facet_wrap(~Dataset, nrow=2) +
+  scale_fill_manual(values = c("#999999",cbPalette[8]), name="", labels =c("MAOM","Non-MAOM")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("C stock bias (kg C" ~ m^{-2} ~ ")")) +
+  xlab("") +
+  geom_hline(yintercept = 0, linetype='dotted')
+dev.off()
+```
+
+##Make latitude plots
+```{r}
+plot.lat <- plot.all %>% tidyr::pivot_longer(POM_kg:PASSIVE_kg, names_to="Pool", values_to = "C_pool") %>% dplyr::select(c( "site", "Source", "Dataset", "Model", "Pool", "C_pool","GPS_LONG","GPS_LAT"))
+plot.lat$Dataset <- factor(plot.lat$Dataset, levels=c("all","Viscarra Rossel","Georgiou","LUCAS"), labels=c("All","Viscarra Rossel","Georgiou","LUCAS")) 
+
+#Make latitude bins for SOM
+ bin.plot <- plot.lat %>% 
+   dplyr::filter(Pool == "SOM_kg") %>%
+   dplyr::mutate(GPS_Bin = round(GPS_LAT, -1)) %>%
+   dplyr::filter(!is.na(C_pool)) %>%
+   dplyr::mutate(GPS_Bin=factor(GPS_Bin, levels=seq(-50,70, by=10)))
+ 
+ bin.plot.pools <- plot.lat %>% 
+   dplyr::mutate(GPS_Bin = round(GPS_LAT, -1)) %>%
+   dplyr::filter(!is.na(C_pool)) %>%
+   dplyr::mutate(GPS_Bin=factor(GPS_Bin, levels=seq(-50,70, by=10)))
+ 
+#Make latitude bin labels
+makelabelsNS <- function(x) {ifelse(x < 0, parse(text=paste0(x,"^o", "*S")), ifelse(x > 0, parse(text=paste0(x,"^o", "*N")),x))}
+
+ybreaks <- seq(-50,70,10)
+ylabels <- makelabelsNS(ybreaks) 
+
+#Plot SOM by latitude
+pdf(file=paste0(figdir,"Figure_LAT.pdf"), height=3.5, width=5)
+print(ggplot(data = bin.plot, aes(y=C_pool, x = GPS_Bin, fill=Source))+
+  geom_boxplot() + 
+  facet_grid(~Source, labeller = labeller(Source = source.labs)) +
+  scale_fill_manual(values = c(cbPalette[3], cbPalette[5], cbPalette[6]), name="", labels =c("Observed","Century","Millennial V2")) +
+  theme_classic() +
+    theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("C stock (kg C " ~ m^{2} ~ ")")) +
+  scale_x_discrete(name = "Latitude", breaks = ybreaks, drop=FALSE, labels = ylabels) +
+  coord_flip())
+dev.off()
+
+#Plot SOM by latitude - Figure 5 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"Figure5.pdf"), height=3.5, width=5)
+print(ggplot(data = bin.plot, aes(y=C_pool, x = GPS_Bin, fill=Source))+
+  geom_boxplot() + 
+  scale_fill_manual(values = c(cbPalette[3], cbPalette[5], cbPalette[6]), name="", labels =c("Observed","Century","Millennial V2")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 0)) +
+  ylab(expression("C stock (kg C " ~ m^{2} ~ ")")) +
+  scale_x_discrete(name = "Latitude", breaks = ybreaks, drop=FALSE, labels = ylabels) +
+  coord_flip())
+dev.off()
+```
+
+##Make latitude bias plot
+```{r}
+#Make plots of bias by latitude
+plot.lat.bias <- plot.all %>%
+  tidyr::pivot_longer(POM_kg:PASSIVE_kg, names_to="Pool", values_to = "C_pool") %>% dplyr::select(c( "site", "Source", "Dataset", "Pool", "C_pool","GPS_LONG","GPS_LAT")) %>%  
+   dplyr::filter(Pool == "SOM_kg") %>%
+   tidyr::pivot_wider(names_from="Source", values_from ="C_pool") %>%
+  dplyr::mutate(Century_bias = Observed-Century, V2_bias = Observed-V2.5pool.MMRMM) %>%
+  tidyr::pivot_longer(Century_bias:V2_bias, names_to = "Model_Bias")
+
+#Make latitude bins for bias
+  bin.plot.bias <- plot.lat.bias %>% 
+   dplyr::mutate(GPS_Bin = round(GPS_LAT, -1)) %>%
+   dplyr::filter(!is.na(value)) %>%
+   dplyr::mutate(GPS_Bin=factor(GPS_Bin, levels=seq(-50,70, by=10)))
+ 
+bias.labs <- c("Millennial V2",  "Century") 
+names(bias.labs) <- c("V2_bias", "Century_bias")
+
+#Plot bias by latitude - Figure S5 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"FigureS5.pdf"), height=3.5, width=5)
+print(ggplot(data = bin.plot.bias, aes(y=value, x = GPS_Bin, fill=Model_Bias))+
+  geom_boxplot() + 
+  facet_grid(~Model_Bias, labeller = labeller(Model_Bias = bias.labs)) +
+  scale_fill_manual(values = c(cbPalette[5], cbPalette[6]), name="", labels =c("Century","Millennial V2")) +
+  theme_classic() +
+    theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("C stock bias (kg C " ~ m^{2} ~ ")")) +
+  scale_x_discrete(name = "Latitude", breaks = ybreaks, drop=FALSE, labels = ylabels) +
+    geom_hline(yintercept = 0, linetype='dotted') +
+  coord_flip())
+dev.off()
+```
+
+##Make stacked bar chart of model pools
+```{r}
+#Organize model pools for stacked plotting
+pie.plot <- bin.plot.pools %>%
+  dplyr::filter(Pool != "SOM_kg") %>%
+  dplyr::filter(!(Source=="V2.5pool.MMRMM"&Pool=="POM.AGG_kg")) %>%
+  dplyr::group_by(Pool, GPS_Bin, Source) %>%
+  dplyr::summarise( median=median(C_pool, na.rm=T), se=sd(C_pool, na.rm=T)/dplyr::n(), n=dplyr::n())
+
+summary.pie.plot <- bin.plot.pools %>%
+  dplyr::filter(Pool != "SOM_kg") %>%
+  dplyr::filter(!(Source=="V2.5pool.MMRMM"&Pool=="POM.AGG_kg")) %>%
+  dplyr::group_by(Pool, Source) %>%
+  dplyr::summarise( median=median(C_pool, na.rm=T), se=sd(C_pool, na.rm=T)/dplyr::n(), n=dplyr::n())
+
+pie.plot$Pool <- factor(pie.plot$Pool, levels=c("MIC_kg","LMWC_kg","POM_kg","AGG_kg","MetLitter_kg","StrLitter_kg","ACTIVE_kg","SLOW_kg","PASSIVE_kg","POM.AGG_kg","MAOM_kg"), labels=c("MIC","LMWC","POM","AGG","MetLitter","StrLitter","ACTIVE","SLOW","PASSIVE","non-MAOM","MAOM"))
+
+summary.pie.plot
+
+#Summarize fraction of C in each pool for Millennial model
+load(file=paste0("V2.5pool.MMRMM_all.Rdata"))
+summary(optim.pools$MAOM/optim.pools$SOM)
+summary(optim.pools$POM/optim.pools$SOM)
+summary(optim.pools$AGG/optim.pools$SOM)
+summary(optim.pools$MIC/optim.pools$SOM)
+summary(optim.pools$LMWC/optim.pools$SOM)
+
+this <- results.df[results.df$Source=="V2.5pool.MMRMM" & results.df$Dataset=="all",]
+summary(this$MAOM_kg/this$SOM_kg)
+that <- results.df[results.df$Source=="Century" & results.df$Dataset=="all",]
+summary(that$SLOW_kg/that$SOM_kg)
+theother <- results.df[results.df$Source=="Observed" & results.df$Dataset=="all",]
+summary(theother$MAOM_kg/theother$SOM_kg)
+
+#Summarize observed fraction MAOM
+observedfracMAOM <- c( kf$MAOM/kf$SOM , vf$hocd030.gC.m2/(vf$pocd030.gC.m2+vf$hocd030.gC.m2) , sdf$MAOM/(sdf$MAOM + sdf$POM.AGG) )
+summary(observedfracMAOM)
+
+#Summarize fraction of C in each pool for Century model 
+load(file=paste0("Century_all.Rdata"))
+summary(optim.pools$ACTIVE/optim.pools$SOM)
+summary(optim.pools$SLOW/optim.pools$SOM)
+summary(optim.pools$PASSIVE/optim.pools$SOM)
+
+#Plot amount of C in each pool by latitude - Figure 6 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"Figure6.pdf"), height=3.5, width=7)
+print(ggplot(data = pie.plot, aes(y=median, x = GPS_Bin, fill=Pool))+
+  geom_bar(stat="identity") + 
+  facet_grid(~Source, labeller = labeller(Source = source.labs)) +
+  scale_fill_manual(values = c(cbPalette[1], cbPalette[2], cbPalette[3],cbPalette[4],"blueviolet",cbPalette[5],"darkred",cbPalette[6],cbPalette[7],cbPalette[8],"#999999"), name="Pool") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab(expression("C stock (kg C " ~ m^{2} ~ ")")) +
+  scale_x_discrete(name = "Latitude", breaks = ybreaks, drop=FALSE, labels = ylabels) +
+  coord_flip())
+dev.off()
+```
+
+##Turnover time plots
+```{r}
+#Load synthesis of turnover time from Chen et al. (2013). The data is included as Appendix A to the paper in Global & Planetary Change available at the journal's website: https://www.sciencedirect.com/science/article/pii/S0921818112001956?casa_token=ItqTpDc6MuoAAAAA:W3dWe4uKexGd_A3tMnoW8zkORxm-VW4QsbbbaWZSiDNK0AunoFVv2hkUM1iDfbsHmGzNnD0jnA 
+chen_mrt <- read.csv(paste0(datadir, "Chen_et_al_2013_GPC.csv"))
+length(chen_mrt[!is.na(chen_mrt$MRT_yr),]$MRT_yr)
+
+    load(file=paste0("MRT_all.Rdata"))
+    mrt.df <- as.data.frame(rbind(cbind(MRT_mean, rep("all", length(MRT_mean))), cbind(chen_mrt$MRT_yr, rep("Chen", length(chen_mrt$MRT_yr)))))
+    load(file=paste0("MRTCentury_all.Rdata"))
+    mrt.df <- rbind(mrt.df, cbind(MRT_mean, rep("Century", length(MRT_mean))))
+
+names(mrt.df) <- c("MRT","Dataset")
+mrt.df$MRT <- as.numeric(as.character(mrt.df$MRT))
+mrt.df$Dataset <- factor(mrt.df$Dataset, levels=c("Chen","Viscarra-Rossel","Georgiou","LUCAS","Century","all"), labels=c("Observed","Viscarra-Rossel","Georgiou","LUCAS","Century","Millennial V2"))
+
+#Make a density histogram of turnover times observed in Chen et al. (2013), modeled by Century, and modeled by Millennial V2 - Figure 9 in Abramoff et al. (2021)
+p3 <- ggplot(mrt.df, aes(MRT, fill = Dataset, colour = Dataset)) +
+  geom_density(alpha = 0.1) +
+  xlim(0,100) +
+  scale_fill_manual(values = c(cbPalette[3], cbPalette[4], cbPalette[2]), name="", labels =c("Observed", "Century", "Millennial V2")) +
+  scale_color_manual(values = c(cbPalette[3], cbPalette[4], cbPalette[2]), name="", labels =c("Observed", "Century", "Millennial V2")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab("Density") +
+  xlab("Turnover Time (years)")
+
+pdf(file=paste0(figdir,"Figure9.pdf"), height=2.5, width=5)
+p3
+dev.off()
+
+summary(mrt.df$MRT[mrt.df$Dataset=="Observed"])
+summary(mrt.df$MRT[mrt.df$Dataset=="Millennial V2"])
+summary(mrt.df$MRT[mrt.df$Dataset=="Century"])
+```
+
+##Nutrients exporation
+```{r}
+#In response to a question about nutrients brought up during review, we explored whether or not there was a relationship between model bias and the N content or C:N ratio of POM and bulk soil
+all.V2 <- plot.all[plot.all$Dataset=="All" & plot.all$Source == "V2.5pool.MMRMM",]
+all.Century <- plot.all[plot.all$Dataset=="All" & plot.all$Source == "Century",]
+all.Observed <- plot.all[plot.all$Dataset=="All" & plot.all$Source == "Observed",]
+plot(all.Observed$SOM_kg, all.V2$SOM_kg)
+plot(all.V2$SOM/1000, all.V2$SOM_kg)
+
+all.V2$SOMbias <- all.V2$SOM/1000 - all.V2$SOM_kg
+all.V2$Bulk.CN <- all.V2$Bulk.C/all.V2$Bulk.N
+all.V2$POM.CN <- all.V2$OC_pom_g_kg/all.V2$N_pom_g_kg
+
+all.Century$SOMbias <- all.Century$SOM/1000 - all.Century$SOM_kg
+all.Century$Bulk.CN <- all.Century$Bulk.C/all.Century$Bulk.N
+all.Century$POM.CN <- all.Century$OC_pom_g_kg/all.Century$N_pom_g_kg
+
+fit1 <- lm(all.V2$SOMbias ~ all.V2$Bulk.CN)
+fit2 <- lm(all.V2$SOMbias ~ all.V2$Bulk.C)
+fit3 <- lm(all.V2$SOMbias ~ all.V2$Bulk.N)
+fit4 <- lm(all.V2$SOMbias ~ all.V2$POM.CN)
+
+fit5 <- lm(all.Century$SOMbias ~ all.Century$Bulk.CN)
+fit6 <- lm(all.Century$SOMbias ~ all.Century$Bulk.C)
+fit7 <- lm(all.Century$SOMbias ~ all.Century$Bulk.N)
+fit8 <- lm(all.Century$SOMbias ~ all.Century$POM.CN)
+
+#Make plots
+pdf(file=paste0(figdir,"Figure_Nutrients_Georgiou.pdf"), height=4, width=5)
+par(mar = c(3.5,3.7,2,0)+.9)
+par(oma = c(0,0,0,0))
+plot(all.V2$Bulk.CN, all.V2$SOMbias, xlab = "Bulk Soil C:N", ylab=expression("C stock bias (kg C " ~ m^{2} ~ ")")) #Georgiou only
+points(all.Century$Bulk.CN, all.Century$SOMbias, col="darkred")
+legend("topright", c("Millennial V2", "Century"), col=c(1, "darkred"), pch=1)
+abline(fit1)
+abline(fit5, col="darkred")
+dev.off()
+
+pdf(file=paste0(figdir,"Figure_Carbon_Georgiou.pdf"), height=4, width=5)
+par(mar = c(3.5,3.7,2,0)+.9)
+par(oma = c(0,0,0,0))
+plot(all.V2$Bulk.C, all.V2$SOMbias, xlab = "Bulk Soil C (g C/kg soil)", ylab=expression("C stock bias (kg C " ~ m^{2} ~ ")")) #Georgiou only
+points(all.Century$Bulk.C, all.Century$SOMbias, col="darkred")
+legend("topright", c("Millennial V2", "Century"), col=c(1, "darkred"), pch=1)
+abline(fit2)
+abline(fit6, col="darkred")
+dev.off()
+
+pdf(file=paste0(figdir,"Figure_Nitrogen_Georgiou.pdf"), height=4, width=5)
+par(mar = c(3.5,3.7,2,0)+.9)
+par(oma = c(0,0,0,0))
+plot(all.V2$Bulk.N, all.V2$SOMbias, xlab = "Bulk Soil N (g N/kg soil)", ylab=expression("C stock bias (kg C " ~ m^{2} ~ ")")) #Georgiou only
+points(all.Century$Bulk.N, all.Century$SOMbias, col="darkred")
+legend("topright", c("Millennial V2", "Century"), col=c(1, "darkred"), pch=1)
+abline(fit3)
+abline(fit7, col="darkred")
+dev.off()
+
+pdf(file=paste0(figdir,"Figure_Nutrients_LUCAS.pdf"), height=4, width=5)
+par(mar = c(3.5,3.7,2,0)+.9)
+par(oma = c(0,0,0,0))
+plot(all.V2$POM.CN, all.V2$SOMbias, xlab = "POM C:N", ylab=expression("C stock bias (kg C " ~ m^{2} ~ ")")) #LUCAS only
+points(all.Century$POM.CN, all.Century$SOMbias, col="darkred")
+legend("topright", c("Millennial V2", "Century"), col=c(1, "darkred"), pch=1)
+abline(fit4)
+abline(fit8, col="darkred")
+dev.off()
+```
+
+#Sensitivity to inputs for Century
+#Load Century
+```{r}
+derivs.Century <- function(step.num,state,parameters) {
+  with(as.list(c(state,parameters)), {
+
+#Equation B1
+  t_scalar <- (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 * (forc_st(step.num) - parameters$t1))) /
+    (parameters$t2 + (parameters$t3 / pi) * atan(pi * parameters$t4 *(30.0 - parameters$t1)))
+
+#Equation B2
+  w_scalar <- 1.0 / (1.0 + parameters$w1 * exp(-parameters$w2 * forc_sw(step.num)/0.39))
+
+#Equation B3
+  f_TEX = parameters$c1 - parameters$c2*parameters$clay_silt*0.01
+  
+#Equation B4
+  f_StrLitter = StrLitter * parameters$k_strlitter * t_scalar * w_scalar * exp(-3*parameters$LigFrac)
+  
+#Equation B5
+  f_MetLitter = MetLitter * parameters$k_metlitter * t_scalar * w_scalar  
+  
+#Equation B6
+  f_ACTIVE <- ACTIVE * parameters$k_active * t_scalar * w_scalar * f_TEX
+    
+#Equation B7
+  f_SLOW <- SLOW * parameters$k_slow * t_scalar * w_scalar
+  
+#Equation B8
+  f_PASSIVE <- PASSIVE * parameters$k_passive * t_scalar * w_scalar
+  
+#Equation B9
+  dStrLitter = parameters$input_to_strlitter * forc_npp(step.num) - f_StrLitter
+  
+#Equation B10
+  dMetLitter = (1-parameters$input_to_strlitter) * forc_npp(step.num) - f_MetLitter
+  
+#Equation B11
+  dACTIVE <- (1-parameters$LigFrac) * parameters$strlitter_to_active * f_StrLitter + parameters$metlitter_to_active * f_MetLitter  + f_SLOW * parameters$slow_to_active + f_PASSIVE * parameters$passive_to_active - f_ACTIVE
+
+#Equation B12
+  dSLOW <-  parameters$LigFrac * parameters$strlitter_to_slow * f_StrLitter + f_ACTIVE * (1-f_TEX-parameters$active_to_passive) - f_SLOW
+
+#Equation B13
+  dPASSIVE <- f_ACTIVE * parameters$active_to_passive + f_SLOW * parameters$slow_to_passive - f_PASSIVE
+            
+    return(list(c(dStrLitter, dMetLitter, dACTIVE, dSLOW, dPASSIVE)))
+  })
+}
+
+```
+
+##Run sensitivity to inputs analysis
+```{r}
+#Plot equilibrium value of different models as a function of litter, soil temperature, and water content
+
+    stateSS <- c(StrLitter=1, MetLitter=1, ACTIVE=1, SLOW=1, PASSIVE=1)
+    derivsSS <- derivs.Century
+    paramsSS <- parameters[[5]]
+
+SSeq <- NULL
+range_forc_st <- seq(from = range(obsdf$SoilTMP_C)[1], to= range(obsdf$SoilTMP_C)[2], length.out = 10)
+range_forc_sw <- seq(from = range(obsdf$SoilMoi_m3m3)[1], to= range(obsdf$SoilMoi_m3m3)[2], length.out = 10)
+range_forc_npp <- seq(from = range(obsdf$NPP.gC.m2.d)[1], to= range(obsdf$NPP.gC.m2.d)[2], length.out = 10)
+range_parm_clay <- seq(from=range(obsdf$ClaySilt)[1], to=range(obsdf$ClaySilt)[2], length.out = 10)
+
+EqRuns <- matrix(nrow=length(range_forc_st)*length(range_forc_sw)*length(range_forc_npp)*length(range_parm_clay), ncol=10)
+
+ptm <- proc.time()
+for (n in 1:length(range_parm_clay)){
+  paramsSS$clay_silt <- range_parm_clay[n]
+    for (l in 1:length(range_forc_npp)){
+      forc_npp <- approxfun(1:SStime, rep(range_forc_npp[l],SStime))
+          for (k in 1:length(range_forc_sw)){  
+          forc_sw <- approxfun(1:SStime, rep(range_forc_sw[k],SStime))
+              for (j in 1:length(range_forc_st)){
+              forc_st <- approxfun(1:SStime, rep(range_forc_st[j],SStime)) 
+              
+                  SSeq <- stode(y = stateSS, time = SStime, func = derivsSS, parms = paramsSS, positive=TRUE)
+                  
+                  SSindex <- j + length(range_forc_st)*(k-1) + length(range_forc_st)*length(range_forc_npp)*(l-1) + length(range_forc_st)*length(range_forc_npp)*length(range_parm_clay)*(n-1)
+                      EqRuns[SSindex,] <- c("Century", forc_st(1), forc_sw(1), forc_npp(1), range_parm_clay[n], SSeq$y)
+              
+              }
+          }
+      }
+  }
+proc.time() - ptm
+
+EqRuns <- as_tibble(EqRuns) %>%
+  dplyr::rename( models=V1, forc_st=V2, forc_sw=V3, forc_npp=V4, parm_clay=V5, StrLitter=V6, MetLitter=V7, ACTIVE=V8, SLOW=V9, PASSIVE=V10) %>%
+  dplyr::mutate_at( vars(forc_st, forc_sw, forc_npp,StrLitter, MetLitter, ACTIVE, SLOW, PASSIVE), as.numeric)
+
+ EqRuns <- EqRuns %>% gather(pool, value, StrLitter:PASSIVE)
+
+save(EqRuns,file="Millennial_Version_Analysis_EqRuns_extralongs_Century.Rdata")
+```
+
+##Plot sensitivity to inputs
+```{r}
+#Load output in case chunk is run separately from previous
+load(file="Millennial_Version_Analysis_EqRuns_extralongs_Century.Rdata")
+EqRuns$parm_clay <- as.numeric(EqRuns$parm_clay)
+centwidth = 9
+centheight = 2.5
+EqRuns$pool <- factor(EqRuns$pool,levels = c("StrLitter", "MetLitter", "ACTIVE", "SLOW", "PASSIVE"))
+
+#Plot sensitivity of model pools to temperature at equilibrium
+pdf(file=paste0(figdir,"eq_plots_temp_all_Cent.pdf"), height=centheight, width=centwidth)
+print(ggplot(EqRuns) +
+    geom_smooth( aes(x=forc_st, y=value ), color="black") +
+    theme_classic() + 
+      theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("Temperature (" ~ degree ~ "C)")) + 
+  facet_wrap(pool ~ ., scales="free_y",nrow=1))
+dev.off()
+
+#Plot sensitivity of model pools to VWC at equilibrium
+pdf(file=paste0(figdir,"eq_plots_vwc_all_Cent.pdf"), height=centheight, width=centwidth)
+print(ggplot(EqRuns) +
+    geom_smooth( aes(x=forc_sw, y=value ), color="black") +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("VWC (" ~ m^{3} ~ m^{-3} ~ ")")) +
+  facet_wrap(pool ~ ., scales="free_y",nrow=1))
+dev.off()
+
+#Plot sensitivity of model pools to litter inputs at equilibrium
+pdf(file=paste0(figdir,"eq_plots_npp_all_Cent.pdf"), height=centheight, width=centwidth)
+print(ggplot(EqRuns) +
+    geom_smooth( aes(x=forc_npp, y=value ), color="black") +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("NPP (gC" ~ m^{-2} ~ d^{-1} ~ ")")) +
+  facet_wrap(pool ~ ., scales="free_y",nrow=1))
+dev.off()
+
+#Plot sensitivity of model pools to clay at equilibrium
+pdf(file=paste0(figdir,"eq_plots_clay_all_Cent.pdf"), height=centheight, width=centwidth)
+print(ggplot(EqRuns) +
+    geom_smooth( aes(x=parm_clay, y=value ), color="black") +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15)) +
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("% Clay & Silt")) +
+  facet_wrap(pool ~ ., scales="free_y",nrow=1))
+dev.off()
+
+#Similar to the plots above, but with all pools on the same plot rather than each pool as a facet
+g1 <- ggplot(EqRuns) +
+    geom_smooth( aes(x=forc_st, y=value, color=pool )) +
+    theme_classic() + 
+      theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15), legend.position = "none") +
+  scale_color_manual(values = mypal) + 
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("Temperature (" ~ degree ~ "C)"))
+
+g2 <- ggplot(EqRuns) +
+    geom_smooth( aes(x=forc_sw, y=value, color=pool )) +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15), legend.position = "none") +
+  scale_color_manual(values = mypal) + 
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("VWC (" ~ m^{3} ~ m^{-3} ~ ")"))
+
+ g3 <- ggplot(EqRuns) +
+    geom_smooth( aes(x=forc_npp, y=value, color=pool )) +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15), legend.position = "none") +
+  scale_color_manual(name="Pool", values = mypal) + 
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("NPP (gC" ~ m^{-2} ~ d^{-1} ~ ")"))
+ 
+   g5 <- ggplot(EqRuns) +
+    geom_smooth( aes(x=parm_clay, y=value, color=pool )) +
+      theme_classic() + 
+            theme(panel.grid = element_blank(), axis.text = element_text(size=10), axis.title = element_text(size=15), strip.text = element_text(size=15), legend.position = "none") +
+  scale_color_manual(name="Pool", values = mypal) + 
+  ylab(expression("SOC (gC" ~ m^{-2} ~ ")")) +
+  xlab(expression("% Clay & Silt"))
+ 
+ g.legend <- ggplot(EqRuns) +
+    geom_smooth( aes(x=forc_st, y=value, color=pool )) +
+      theme(panel.grid = element_blank(), strip.text = element_text(size=15)) +
+  scale_color_manual(name = "Pool", values = mypal)
+
+#Plot sensitivity of model pools to inputs together
+pdf(file=paste0(figdir,"eq_plots_compressed_all_Cent.pdf"), height=4, width=centwidth)
+multiplot(g1, g5, g2, g2, g3, cols=3)
+dev.off()
+
+pdf(file=paste0(figdir,"eq_plots_legend_all_Cent.pdf"), height=4, width=4)
+print(g.legend)
+dev.off()
+```
