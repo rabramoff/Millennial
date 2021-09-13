@@ -48,6 +48,11 @@ Examples of all files and their formats are provided in the folder <b>Fortran/Mi
 &nbsp;&nbsp;&nbsp; <b>run_functions.R</b> - run script\
 &nbsp;&nbsp;&nbsp; <b>model_tutorial.Rmd</b> - tutorial with explanation of how to run the model as well as examples and exercises
 
+#### analysis:
+&nbsp;&nbsp;&nbsp; <b>Site_Data_for_Millennial.Rmd</b> - Prepares input data needed to run the Millennial model as well as other data used for analysis\
+&nbsp;&nbsp;&nbsp; <b>Millennial_Version_Analysis.Rmd</b> - Annotated analysis scripts\
+&nbsp;&nbsp;&nbsp; <b>X.Rdata</b> - Multiple Rdata files called by <b>Site_Data_for_Millennial.Rmd</b>
+
 This repository branches from the original repository (https://github.com/email-clm/Millennial), containing the first version of the Millennial model framework written by Xiaofeng Xu. There are some differences between the equations presented in the Appendix of Abramoff et al. (2018) and the repository. They are noted as issues here (https://github.com/PNNL-TES/millenial/issues) where the model is being translated into R. This repository may further modify the original equations as part of ongoing model development.
 
 ## Original Readme
