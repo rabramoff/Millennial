@@ -1019,8 +1019,8 @@ ggplot(par.sens) +
     facet_wrap(pool ~ ., scales="free_y",nrow=2)
 }
 
-#Save plot
-pdf(file=paste0(figdir,"param_sens_plot.pdf"), height=5, width=10)
+#Save plot - Figure S2 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"FigureS2.pdf"), height=5, width=10)
 print(par.sens.plot())
 dev.off()
 
@@ -1187,8 +1187,8 @@ ggplot(par.coll) +
     facet_wrap(pool ~ . , nrow=2)
 }
 
-#Save plot
-pdf(file=paste0(figdir,"param_coll_plot.pdf"), height=5, width=10)
+#Figure 2 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,"Figure2.pdf"), height=5, width=10)
 print(par.coll.plot())
 dev.off()
 
@@ -1611,8 +1611,9 @@ EqRuns$parm_clay <- as.numeric(EqRuns$parm_clay)
 EqRuns$parm_pH <- as.numeric(EqRuns$parm_pH)
 EqRuns5pool <- EqRuns
 
+#Together these are Figure S3 from Abramoff et al. (2021)
 #Plot sensitivity of model pools to temperature at equilibrium
-pdf(file=paste0(figdir,"eq_plots_temp_all.pdf"), height=4.24, width=9)
+pdf(file=paste0(figdir,"FigureS3a.pdf"), height=4.24, width=9)
 print(ggplot(EqRuns5pool) +
     geom_smooth( aes(x=forc_st, y=value ), color="black") +
     theme_classic() + 
@@ -1623,7 +1624,7 @@ print(ggplot(EqRuns5pool) +
 dev.off()
 
 #Plot sensitivity of model pools to VWC at equilibrium
-pdf(file=paste0(figdir,"eq_plots_vwc_all.pdf"), height=4.24, width=9)
+pdf(file=paste0(figdir,"FigureS3b.pdf"), height=4.24, width=9)
 print(ggplot(EqRuns5pool) +
     geom_smooth( aes(x=forc_sw, y=value ), color="black") +
       theme_classic() + 
@@ -1634,7 +1635,7 @@ print(ggplot(EqRuns5pool) +
 dev.off()
 
 #Plot sensitivity of model pools to litter inputs at equilibrium
-pdf(file=paste0(figdir,"eq_plots_npp_all.pdf"), height=4.24, width=9)
+pdf(file=paste0(figdir,"FigureS3c.pdf"), height=4.24, width=9)
 print(ggplot(EqRuns5pool) +
     geom_smooth( aes(x=forc_npp, y=value ), color="black") +
       theme_classic() + 
@@ -1645,7 +1646,7 @@ print(ggplot(EqRuns5pool) +
 dev.off()
 
 #Plot sensitivity of model pools to pH at equilibrium
-pdf(file=paste0(figdir,"eq_plots_pH_all.pdf"), height=4.24, width=9)
+pdf(file=paste0(figdir,"FigureS3e.pdf"), height=4.24, width=9)
 print(ggplot(EqRuns5pool) +
     geom_smooth( aes(x=parm_pH, y=value ), color="black") +
       theme_classic() + 
@@ -1656,7 +1657,7 @@ print(ggplot(EqRuns5pool) +
 dev.off()
 
 #Plot sensitivity of model pools to clay and silt at equilibrium
-pdf(file=paste0(figdir,"eq_plots_clay_all.pdf"), height=4.24, width=9)
+pdf(file=paste0(figdir,"FigureS3d.pdf"), height=4.24, width=9)
 print(ggplot(EqRuns5pool) +
     geom_smooth( aes(x=parm_clay, y=value ), color="black") +
       theme_classic() + 
@@ -1713,11 +1714,11 @@ g2 <- ggplot(EqRuns5pool) +
   scale_color_manual(name = "Pool", values = mypal)
 
 #Plot sensitivity of model pools to inputs together (Figure 3 in Abramoff et al. (2021))
-pdf(file=paste0(figdir,"eq_plots_compressed_all.pdf"), height=4, width=10)
+pdf(file=paste0(figdir,"Figure3.pdf"), height=4, width=10)
 multiplot(g1, g5, g2, g4, g3, cols=3)
 dev.off()
 
-pdf(file=paste0(figdir,"eq_plots_legend_all.pdf"), height=4, width=4)
+pdf(file=paste0(figdir,"Figure3_legend.pdf"), height=4, width=4)
 print(g.legend)
 dev.off()
 }
@@ -3114,11 +3115,11 @@ summary(lm(mldfSOM.kf$Cpool~predict(gbmSOM.sdf, newdata = kfselect)))
 summary(lm(mldfSOM.sdf$Cpool~predict(gbmSOM.kf, newdata = sdfselect)))
 summary(lm(mldfSOM.vf$Cpool~predict(gbmSOM.kf, newdata = vfselect)))
 
-#Plot model performance - training dataset
+#Plot model performance - training dataset - Figure S11 in Abramoff et al. (2021)
 ymax_plot <- 30
 ylab.ml <- expression("Predicted C stock (kg C " ~ m^{2} ~ ")")
 xlab.ml <- expression("Observed C stock (kg C " ~ m^{2} ~ ")")
-pdf(file=paste0(figdir,paste0("FigureS_MLIN.pdf")), height=5, width=5)
+pdf(file=paste0(figdir,paste0("FigureS11.pdf")), height=5, width=5)
 par(mfrow = c(2,2))
 par(mar = c(3.5,3.7,0,0.1)+.9)
 par(oma = c(0,0,0,0))
@@ -3135,8 +3136,8 @@ plot(TrainSOM.sdf$Cpool/1000, predict(gbmSOM.sdf)/1000, xlab = xlab.ml, ylab = y
 abline(0,1,lty=2)
 dev.off()
 
-#Plot model performance - testing dataset
-pdf(file=paste0(figdir,paste0("FigureS_MLOUT.pdf")), height=5, width=5)
+#Plot model performance - testing dataset - Figure S12 in Abramoff et al. (2021)
+pdf(file=paste0(figdir,paste0("FigureS12.pdf")), height=5, width=5)
 par(mfrow = c(2,2))
 par(mar = c(3.5,3.7,0,0.1)+.9)
 par(oma = c(0,0,0,0))
@@ -3781,8 +3782,9 @@ centwidth = 9
 centheight = 2.5
 EqRuns$pool <- factor(EqRuns$pool,levels = c("StrLitter", "MetLitter", "ACTIVE", "SLOW", "PASSIVE"))
 
+#Together these plots are Figure S4 in Abramoff et al. (2021)
 #Plot sensitivity of model pools to temperature at equilibrium
-pdf(file=paste0(figdir,"eq_plots_temp_all_Cent.pdf"), height=centheight, width=centwidth)
+pdf(file=paste0(figdir,"FigureS4a.pdf"), height=centheight, width=centwidth)
 print(ggplot(EqRuns) +
     geom_smooth( aes(x=forc_st, y=value ), color="black") +
     theme_classic() + 
@@ -3793,7 +3795,7 @@ print(ggplot(EqRuns) +
 dev.off()
 
 #Plot sensitivity of model pools to VWC at equilibrium
-pdf(file=paste0(figdir,"eq_plots_vwc_all_Cent.pdf"), height=centheight, width=centwidth)
+pdf(file=paste0(figdir,"FigureS4b.pdf"), height=centheight, width=centwidth)
 print(ggplot(EqRuns) +
     geom_smooth( aes(x=forc_sw, y=value ), color="black") +
       theme_classic() + 
@@ -3804,7 +3806,7 @@ print(ggplot(EqRuns) +
 dev.off()
 
 #Plot sensitivity of model pools to litter inputs at equilibrium
-pdf(file=paste0(figdir,"eq_plots_npp_all_Cent.pdf"), height=centheight, width=centwidth)
+pdf(file=paste0(figdir,"FigureS4c.pdf"), height=centheight, width=centwidth)
 print(ggplot(EqRuns) +
     geom_smooth( aes(x=forc_npp, y=value ), color="black") +
       theme_classic() + 
@@ -3815,7 +3817,7 @@ print(ggplot(EqRuns) +
 dev.off()
 
 #Plot sensitivity of model pools to clay at equilibrium
-pdf(file=paste0(figdir,"eq_plots_clay_all_Cent.pdf"), height=centheight, width=centwidth)
+pdf(file=paste0(figdir,"FigureS4d.pdf"), height=centheight, width=centwidth)
 print(ggplot(EqRuns) +
     geom_smooth( aes(x=parm_clay, y=value ), color="black") +
       theme_classic() + 

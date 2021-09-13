@@ -5,7 +5,7 @@ date: "Sep 9, 2021"
 output: html_document
 ---
 ```
-This R notebook prepares the site data from it's original forms so that it can be used to run the Millennial model. Data are described in Abramoff et al. (2021), and their references summarized in Table 2.
+This R notebook prepares the site data from their original forms so that it can be used to run the Millennial model. Data are described in Abramoff et al. (2021), and their references summarized in Table 2.
 ```
 #Load Libraries and Set File Paths
 ```{r}
@@ -153,13 +153,14 @@ dev.off()
 pch.here <- 16
 size.here <- 0.5
 
-pdf(file=paste0(figdir, "FigureS_MAP.pdf"), height=4, width=7)
+#Figure S1 in Abramoff et al. (2021)
+pdf(file=paste0(figdir, "FigureS1.pdf"), height=4, width=7)
 gg1 + geom_point(data=vf, aes(x=GPS_LONG, y=GPS_LAT), color=cbPalette[2], pch=pch.here, size=size.here) +
     geom_point(data=kf, aes(x=GPS_LONG, y=GPS_LAT), color=cbPalette[6], pch=pch.here, size=size.here) +
   geom_point(data=sdf, aes(x=GPS_LONG, y=GPS_LAT), color=cbPalette[7], pch=pch.here, size=size.here)
 dev.off()
 
-pdf(file=paste0(figdir, "FigureS_MAP_legend.pdf"), height=3, width=3)
+pdf(file=paste0(figdir, "FigureS1_legend.pdf"), height=3, width=3)
 legdf <- as.data.frame(cbind(Dataset = c("Viscarra Rossel","Georgiou","Lucas"), Dummy1 = c(1,2,3), Dummy2 = c(1,2,3) ))
 ggplot(data=legdf, aes(x=Dummy1, y=Dummy2, col=Dataset)) + geom_point() + theme_classic() +
  scale_color_manual(values = c(cbPalette[2], cbPalette[6], cbPalette[7]), name="", labels =c("Viscarra Rossel","Georgiou","LUCAS"))
