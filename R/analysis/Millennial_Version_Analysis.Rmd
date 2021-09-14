@@ -1274,7 +1274,7 @@ load(paste0(datadir,"ViscarraRossel_write.Rdata"))
 #Georgiou data
 load(paste0(datadir,"Georgiou_write.Rdata"))
 kf <- kf[kf$depth > 0.05,] #Removes all profiles less that 5 cm in depth
-#kf <- kf[kf$VegType=="Crop",] #If uncommented, removes all sites that are designated as cropland
+#kf <- kf[kf$VegType!="Crop",] #If uncommented, removes all sites that are designated as cropland
 ```
 
 ##Set Site-Specific Values
