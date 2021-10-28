@@ -34,7 +34,7 @@ rm(list=ls())
   #"Viscarra-Rossel" <- VR dataset
   #"Gerogiou" <- KG dataset
   #"LUCAS" <- LUCAS dataset
-testDat = "Viscarra-Rossel" #all #Viscarra-Rossel #Georgiou #LUCAS
+testDat = "LUCAS" #all #Viscarra-Rossel #Georgiou #LUCAS
 
 #Switches to execute certain portions of the code (0=do not execute, 1=execute)
 constant_inputs = 0
@@ -45,8 +45,8 @@ do_sens_fun = 0
 do_mod_fit = 1
 do_explore_bias = 1
 do_MRT_sites = 0
-do_FME_SS_V2MMRMM = 0
-do_FME_SS_Century = 1
+do_FME_SS_V2MMRMM = 1
+do_FME_SS_Century = 0
 
 #Fit settings
 proptrain = 1 #proportion of data to train on
@@ -1274,7 +1274,7 @@ load(paste0(datadir,"ViscarraRossel_write.Rdata"))
 #Georgiou data
 load(paste0(datadir,"Georgiou_write.Rdata"))
 kf <- kf[kf$depth > 0.05,] #Removes all profiles less that 5 cm in depth
-#kf <- kf[kf$VegType!="Crop",] #If uncommented, removes all sites that are designated as cropland
+kf <- kf[kf$VegType!="Crop",] #If uncommented, removes all sites that are designated as cropland
 ```
 
 ##Set Site-Specific Values
@@ -1390,7 +1390,7 @@ Obs.prep <- Obs.prep[!is.na(Obs.prep$SOM),]
 ##Create training and test sets
 ```{r}
 #Partitions data into training and test datasets
-set.seed(1234)
+set.seed(1)
 trainIndex <- createDataPartition(Obs.prep$SOM, p = proptrain, list = FALSE, times = 1)
 obsTrain <- Obs.prep[trainIndex,]
 obsTest <- Obs.prep[-trainIndex,]  
@@ -2288,6 +2288,13 @@ MBE_SOM <- mean(SOM.bias, na.rm=T)
 MAE_MAOM <- mean(abs(MAOM.bias), na.rm=T)
 MAE_SOM <- mean(abs(SOM.bias), na.rm=T)
 
+MAE_SOM
+MBE_SOM
+MAE_MAOM
+MBE_MAOM
+RMSE_kg
+AIC
+
 summary(lm(optim.pools[, "SOM"] ~ Obs.pools[, "SOM"]))
 summary(lm(optim.pools[, "MAOM"] ~ Obs.pools[, "MAOM"]))
 
@@ -2296,6 +2303,8 @@ POM.AGG.bias <- optim.pools[, "POM.AGG"]/1000 - Obs.pools[, "POM.AGG"]/1000
   
 MAE_POM_AGG <- mean(abs(POM.AGG.bias), na.rm=T)
 MBE_POM_AGG <- mean(POM.AGG.bias, na.rm=T)
+MAE_POM_AGG
+MBE_POM_AGG
 
 summary(lm(optim.pools[, "POM.AGG"] ~ Obs.pools[, "POM.AGG"]))
 }
@@ -2347,6 +2356,10 @@ AIC = dim(Obs.pools)[1] * log(sum((Obs.pools[, "SOM"]/1000- optim.pools[, "SOM"]
 
 MBE_SOM <- mean(SOM.bias)
 MAE_SOM <- mean(abs(SOM.bias))
+MAE_SOM
+MBE_SOM
+RMSE_kg
+AIC
 
 summary(lm(optim.pools[, "SOM"] ~ Obs.pools[, "SOM"]))
 
@@ -2560,8 +2573,8 @@ plotdf$LU <- rep(datdf$LU, 2)
 LU.char <- as.data.frame(cbind(c("C10","C30","C20","E20","E10","E30"), c("Broadleaved","Mixed forest","Coniferous","Pure grass","Mixed grass","Re-vegetated")))
 names(LU.char) <- c("LU","LU.Description")
 
-LUdf <- dplyr::left_join(plotdf, LU.char)
-LUdf$LU.Description <- factor(LUdf$LU.Description,levels = c("Pure grass","Broadleaved","Mixed Forest","Coniferous","Mixed grass","Re-vegetated"))
+LUdf <- dplyr::full_join(plotdf, LU.char)
+LUdf$LU.Description <- factor(LUdf$LU.Description,levels = c("Pure grass","Broadleaved","Mixed forest","Coniferous","Mixed grass","Re-vegetated"))
 
 #Plot modeled stocks for LU categories
 pdf(file=paste0(figdir,"LU_MAOM_",model.name,"_",testDat,".pdf"), height=3, width=4)
@@ -2604,8 +2617,9 @@ return(list(LUfit, MBE_LU, MAE_LU))
 #Executes function for particular LU categories
 do_LU_errors("Pure grass")
 do_LU_errors("Broadleaved")
-do_LU_errors("Mixed Forest")
+do_LU_errors("Mixed forest")
 do_LU_errors("Coniferous")
+do_LU_errors("Mixed grass")
 }
 }
 ```
@@ -3292,7 +3306,7 @@ results.df <- results.df[!(results.df$Source == "Observed" & results.df$Model ==
 #Organize data frames with biome and LU labels
 plot.all <- fulldf %>% dplyr::left_join(biome.char, by="Biome") %>% dplyr::full_join(results.df) %>% dplyr::left_join(LU.char)
 plot.all$Biome.Short <- factor(plot.all$Biome.Short, levels = c("Boreal F", "Temp CF", "Temp BMF", "Montane", "Temp Grasslands", "Mediterranean", "Deserts", "Trop Moist BF", "Trop Grass", "Flooded", "Tundra", "Mangroves", "Trop Dry BF", "Trop CF"))
-plot.all$LU.Description <- factor(plot.all$LU.Description,levels = c("Pure grass","Broadleaved","Mixed Forest","Coniferous","Mixed grass","Re-vegetated"))
+plot.all$LU.Description <- factor(plot.all$LU.Description,levels = c("Pure grass","Broadleaved","Mixed forest","Coniferous","Mixed grass","Re-vegetated"))
 
 plot.all$Dataset <- factor(plot.all$Dataset, levels=c("all","Viscarra-Rossel","Georgiou","LUCAS"), labels=c("All","Viscarra Rossel","Georgiou","LUCAS"))
 
