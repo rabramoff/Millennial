@@ -1,7 +1,11 @@
 # Millennial
-
+Nov 11, 2021\
 Millennial Version 2 develops upon the conceptual framework presented in the Biogeochemistry paper Abramoff et al. (2018) (http://dx.doi.org/10.1007/s10533-017-0409-7). 
-The Millennial Version 2 description and evaluation paper is currently under review. Until citation information is added to this repository, please contact Rose Abramoff so she can keep you updated.
+The Millennial Version 2 description and evaluation paper is published open access here: https://doi.org/10.1016/j.soilbio.2021.108466. You can cite the paper as:
+
+Abramoff, Rose Z., Bertrand Guenet, Haicheng Zhang, Katerina Georgiou, Xiaofeng Xu, Raphael A. Viscarra Rossel, Wenping Yuan, and Philippe Ciais. "Improved global-scale predictions of soil carbon stocks with Millennial Version 2." Soil Biology and Biochemistry (2021) 164: 108466.
+
+Please contact Rose Abramoff (rose.abramoff@lsce.ipsl.fr) with any questions, issues, comments, inquiries.
 
 The model is organized in folders, first by programming language and then by model version.
 ### Fortran:
@@ -55,7 +59,7 @@ Examples of all files and their formats are provided in the folder <b>Fortran/Mi
 
 This repository branches from the original repository (https://github.com/email-clm/Millennial), containing the first version of the Millennial model framework written by Xiaofeng Xu. There are some differences between the equations presented in the Appendix of Abramoff et al. (2018) and the repository. They are noted as issues here (https://github.com/PNNL-TES/millenial/issues) where the model is being translated into R. This repository may further modify the original equations as part of ongoing model development.
 
-## Original Readme
+## Millennial V1 Archived Readme
 
 March 14, 2017
 This is a repository for the newly developed Millennial model (version 1.0)
