@@ -47,12 +47,12 @@ kf$GPS_LONG <- ifelse(kf$EW=="E", kf$Lon, -kf$Lon)
 kf$GPS_LAT <- ifelse(kf$NS=="S", -kf$Lat, kf$Lat)
 ```
 
-#Read in VR Dataset
+#Read in VR Dataset from CSIRO
 ```{r}
 #This dataset is provided here as an Rdata file
-load(paste0(datadir,"VR_read.Rdata"))
-
-#The dataset measurements are described in Viscarra Rossel and Hicks (2015) and Viscarra Rossel et al. (2019).
+#load(paste0(datadir,"VR_read.Rdata"))
+#The above line and Rdata file have been temporarily removed as authors determine if the geolocation information of a subset of the sites can be shared. To access those data which are publicly available please visit the CSIRO Data Access Repository. URL for SOC fraction data: https://data.csiro.au/collection/csiro:5883?q=australia%20soil%20carbon&_st=keyword&_str=13&_si=2 
+# Description and application of this and related data sets can be found in Viscarra Rossel and Hicks (2015) and Viscarra Rossel et al. (2019). 
 
 #Some variable information:
 #vf$Rain #Rainfall in mm/yr
