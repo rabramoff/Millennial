@@ -41,7 +41,7 @@ load("LUCAS_read.Rdata")
 
 #Read in KG Dataset
 ```{r}
-#This data will be accessible from Georgiou et al. (2021) and added here as an Rdata file when it is published - it is currently under review at Nature Geoscience.
+#This data is from Georgiou et al. (2022) and is accessible here: https://zenodo.org/record/5987415#.YrC_vezMJeg
 kf <- read.csv(paste0(datadir,"Kat_MAOM/Georgiou-MAOM-data.csv"))
 kf$GPS_LONG <- ifelse(kf$EW=="E", kf$Lon, -kf$Lon)
 kf$GPS_LAT <- ifelse(kf$NS=="S", -kf$Lat, kf$Lat)
