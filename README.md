@@ -5,7 +5,7 @@ The Millennial Version 2 description and evaluation paper is published open acce
 
 Abramoff, Rose Z., Bertrand Guenet, Haicheng Zhang, Katerina Georgiou, Xiaofeng Xu, Raphael A. Viscarra Rossel, Wenping Yuan, and Philippe Ciais. "Improved global-scale predictions of soil carbon stocks with Millennial Version 2." Soil Biology and Biochemistry (2021) 164: 108466.
 
-Please contact Rose Abramoff (abramoffrz@ornl.gov) with any questions, issues, comments, inquiries.
+Please contact Rose Abramoff (rose.abramoff@igdore.org) with any questions, issues, comments, inquiries.
 
 The model is organized in folders, first by programming language and then by model version.
 ### Fortran:
